@@ -1,0 +1,1902 @@
+openapi: 3.0.3
+info:
+  title: INLA-S Quotation
+  version: "1.0.0"
+  description: |
+    Quotation MVP — workflow, tasks/SLA, role payloads, attachments (S3), history, clone/re-submit, outcome.
+
+    HTTP API v2 → Lambda `src/index.handler` via `event.routeKey`. Path `{code}` = `BG-######`. JSON camelCase.
+
+    **Authorization:** SALES owner scope (QUO-004); global read for EXECUTOR/QA/R&D/ACCOUNTING/DIRECTOR/ADMIN (QUO-005);
+    **ADMIN read-only** on workflow mutations. Writes use `runWithRequestContext` (no JS `audit_events` inserts).
+
+    **Optimistic lock:** send `version` on PUT draft, submit, resubmit/submit, business-outcome, director/decision → 409 if stale.
+
+    **Env:** `ATTACHMENTS_BUCKET`, `AWS_REGION`, optional `ATTACHMENTS_ENABLED=true` for ATT minimums on task complete.
+servers:
+  - url: https://{apiHost}
+    variables:
+      apiHost:
+        default: api.example.com
+security:
+  - cognitoAccessToken: []
+tags:
+  - name: Quotations
+  - name: Workflow
+  - name: Tasks
+  - name: RoleData
+  - name: Attachments
+  - name: History
+  - name: CustomerTab
+  - name: Reports
+paths:
+  /tasks:
+    get:
+      operationId: listTaskInbox
+      tags: [Tasks]
+      summary: Task inbox (open tasks on active workflow stages)
+      description: |
+        Replaces client N+1 (`GET /quotations` + `GET /quotations/{code}` per row).
+        Returns open tasks (`pending` / `in_progress`) on the **current cycle** for quotations in active workflow stages.
+        Task types are scoped by JWT role (ADMIN = all types; SALES = owner quotations, all task types like FE fallback).
+        `slaAlertState` is computed on read (50% elapsed → `warning`, past deadline → `overdue`).
+        Sort: overdue → warning → normal, then `slaDeadlineAt` ascending.
+      parameters:
+        - $ref: "#/components/parameters/SlaAlertState"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskInboxResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /quotations:
+    get:
+      operationId: listQuotations
+      tags: [Quotations]
+      summary: List quotations
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/WorkflowStatus"
+        - $ref: "#/components/parameters/BusinessOutcome"
+        - $ref: "#/components/parameters/CycleType"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationListResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      operationId: createQuotation
+      tags: [Quotations]
+      summary: Create draft quotation (SALES)
+      description: Creates quotation + cycle #1 (`new`) + `quotation_sales_data`. Owner from JWT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateQuotationRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /quotations/{code}:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    get:
+      operationId: getQuotation
+      tags: [Quotations]
+      summary: Get quotation aggregate
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateQuotationDraft
+      tags: [Quotations]
+      summary: Update draft (SALES owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateQuotationDraftRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+        "409": { $ref: "#/components/responses/Conflict" }
+  /quotations/{code}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: cancelQuotationDraft
+      tags: [Quotations]
+      summary: Cancel draft (SALES owner)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/submit:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: submitQuotation
+      tags: [Workflow]
+      summary: Submit current draft cycle (SALES owner)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/resubmit/prepare:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: prepareResubmit
+      tags: [Workflow]
+      summary: Open re-submit draft cycle (SALES owner)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/resubmit/submit:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: submitResubmit
+      tags: [Workflow]
+      summary: Submit re-submit cycle (SALES owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resubmitReason]
+              properties:
+                resubmitReason:
+                  type: string
+                version:
+                  type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/clone:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: cloneQuotation
+      tags: [Workflow]
+      summary: Clone to new draft quotation (SALES owner)
+      description: Copies sales carton fields only. Attachment copy is planned for PR2.
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/business-outcome:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    patch:
+      operationId: updateBusinessOutcome
+      tags: [Workflow]
+      summary: Update business outcome (SALES owner, approved only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [businessOutcome]
+              properties:
+                businessOutcome:
+                  $ref: "#/components/schemas/BusinessOutcome"
+                version:
+                  type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/tasks/{taskType}/start:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - $ref: "#/components/parameters/TaskType"
+    post:
+      operationId: startTask
+      tags: [Tasks]
+      summary: Start workflow task (matching role)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/tasks/{taskType}/complete:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - $ref: "#/components/parameters/TaskType"
+    post:
+      operationId: completeTask
+      tags: [Tasks]
+      summary: Complete workflow task (matching role)
+      description: |
+        **Do not** complete `director_review` here — use `POST /quotations/{code}/director/decision` (409 otherwise).
+
+        **QA (`qa_review`):** each current-cycle `quotation_line_items` row must have a matching `qaData.qaLineData[]`
+        entry (`lineNumber` = `line_number`). Per line: non-empty **QA-09…12** (`burstStandard`…`kcgStandard`),
+        **QA-13** (`kcgQaSxProposal1`), and **at least one** of **QA-14 / QA-15** (`kcgQaSxProposal2` or `kcgQaSxProposal3`).
+
+        **R&D (`rnd_review`):** each line must have a matching `rndData.rndLineData[]` entry. Per line:
+        `printingPlateCost` and `dieCost` ≥ 0 (required for complete), non-whitespace `productionPlan` (RND-11).
+
+        Consolidation: **unitPrice on every line item** (LIN-07). Accounting: `finalQuotationValue`.
+        Attachment minimums (QA/R&D/consolidation) apply when `ATTACHMENTS_ENABLED=true`.
+        QA+RND → `executor_consolidation` only when both tasks complete (one workflow transition event).
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/qa:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    put:
+      operationId: updateQaData
+      tags: [RoleData]
+      summary: Save QA payload (QA)
+      description: |
+        **Full replace** of `qaLineData` for the current cycle. Body must include `qaLineData` (array).
+        Length and `lineNumber` set must match `lineItems` for the cycle (sorted `line_number`); use `[]` only when the cycle has no lines.
+        Persisted on `quotation_line_qa` (one row per line), joined by `lineNumber`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QaDataPut"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/rnd:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    put:
+      operationId: updateRndData
+      tags: [RoleData]
+      summary: Save R&D payload (R&D)
+      description: |
+        **Full replace** of `rndLineData` for the current cycle. Body must include `rndLineData` (array).
+        Same line-count / `lineNumber` rules as QA. Persisted on `quotation_line_rnd`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RndDataPut"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/development-minutes:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    get:
+      operationId: getDevelopmentMinutes
+      tags: [RoleData]
+      summary: BM03 development minutes for current cycle (quotation read scope)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevelopmentMinutes"
+                nullable: true
+    put:
+      operationId: updateDevelopmentMinutes
+      tags: [RoleData]
+      summary: Save BM03 development minutes (R&D only; ADMIN read-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevelopmentMinutesInput"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/executor/intake:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    put:
+      operationId: updateExecutorIntake
+      tags: [RoleData]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/executor/consolidation:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    put:
+      operationId: updateExecutorConsolidation
+      tags: [RoleData]
+      summary: EXECUTOR consolidation header (EXC-05/06) and per-line price/remark (LIN-07/09)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecutorConsolidationPayload"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/accounting:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    put:
+      operationId: updateAccountingData
+      tags: [RoleData]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/director/decision:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: directorDecision
+      tags: [RoleData]
+      summary: Per-line approve or reject (DIRECTOR only)
+      description: |
+        **DIRECTOR** only, while `workflow_status = director_review`. One decision per current-cycle line.
+        Any line `rejected` → quotation `rejected`; all lines `approved` → quotation `approved`.
+        `rejectionReason` required on each rejected line.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DirectorDecisionRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationDetailResponse"
+  /quotations/{code}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    get:
+      operationId: listAttachments
+      tags: [Attachments]
+      parameters:
+        - name: cycleId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: section
+          in: query
+          schema:
+            $ref: "#/components/schemas/AttachmentSection"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachments, page, pageSize, total]
+                properties:
+                  attachments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Attachment"
+                  page:
+                    type: integer
+                    default: 1
+                  pageSize:
+                    type: integer
+                    default: 20
+                  total:
+                    type: integer
+  /quotations/{code}/attachments/presign:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: presignAttachment
+      tags: [Attachments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignAttachmentRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploadUrl:
+                    type: string
+                  storageKey:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+  /quotations/{code}/attachments/confirm:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    post:
+      operationId: confirmAttachment
+      tags: [Attachments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PresignAttachmentRequest"
+                - type: object
+                  required: [storageKey]
+                  properties:
+                    storageKey:
+                      type: string
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachment:
+                    $ref: "#/components/schemas/Attachment"
+  /quotations/{code}/attachments/{attachmentId}:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - name: attachmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: deleteAttachment
+      tags: [Attachments]
+      summary: Soft-delete own attachment
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+  /quotations/{code}/history:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - $ref: "#/components/parameters/Page"
+      - $ref: "#/components/parameters/PageSize"
+    get:
+      operationId: listQuotationHistory
+      tags: [History]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+  /quotations/{code}/revisions:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - $ref: "#/components/parameters/Page"
+      - $ref: "#/components/parameters/PageSize"
+    get:
+      operationId: listRevisions
+      tags: [History]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions, page, pageSize, total]
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Revision"
+                  page:
+                    type: integer
+                    default: 1
+                  pageSize:
+                    type: integer
+                    default: 20
+                  total:
+                    type: integer
+  /quotations/{code}/revisions/{revisionCode}:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+      - name: revisionCode
+        in: path
+        required: true
+        schema:
+          type: string
+          example: REV-01
+    get:
+      operationId: getRevision
+      tags: [History]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revision:
+                    $ref: "#/components/schemas/Revision"
+                  snapshot:
+                    type: object
+  /quotations/{code}/similar-by-product:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    get:
+      operationId: similarByProduct
+      tags: [History]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationListResponse"
+  /quotations/{code}/similar-by-customer:
+    parameters:
+      - $ref: "#/components/parameters/QuotationCode"
+    get:
+      operationId: similarByCustomer
+      tags: [History]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationListResponse"
+  /customers/{customerCode}/quotations:
+    parameters:
+      - name: customerCode
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^KH-\\d{6,}$"
+      - $ref: "#/components/parameters/Page"
+      - $ref: "#/components/parameters/PageSize"
+    get:
+      operationId: listCustomerQuotations
+      tags: [CustomerTab]
+      summary: Quotations for customer (SALES = own only)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotationListResponse"
+  /reports/operations:
+    get:
+      operationId: getOperationsReport
+      tags: [Reports]
+      summary: RPT-01 — workflow status counts in period
+      description: |
+        Read-only operations report. Counts quotations by current `workflowStatus` where
+        **`quotations.created_at`** falls in `[fromDate, toDate]` (inclusive calendar days, UTC).
+        Default range when omitted: last 30 days (OQ-RPT-02).
+
+        **Scope:** SALES sees own quotations (`salesOwnerUsername`); other quotation roles see all.
+        Optional `department` limits to quotations whose **current cycle** has a task of that `taskType`.
+
+        Period anchor and win-rate denominators may change when OQ-RPT-05/06 are finalized.
+      parameters:
+        - $ref: "#/components/parameters/ReportFromDate"
+        - $ref: "#/components/parameters/ReportToDate"
+        - $ref: "#/components/parameters/ReportDepartment"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationsReportResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /reports/business:
+    get:
+      operationId: getBusinessReport
+      tags: [Reports]
+      summary: RPT-02 — sent, won, lost, win rate, total won value
+      description: |
+        Business outcome KPIs for quotations created in the reporting period (`quotations.created_at`).
+        **`sent`** = `sent_to_customer` + `won` + `lost`; **`winRate`** = `won / sent` when `sent > 0` (OQ-RPT-05 pending).
+        **`totalWonValue`** sums `finalQuotationValue` from the latest **approved** workflow cycle per won quotation (OQ-RPT-06 assumption).
+        SALES scope: own quotations only.
+      parameters:
+        - $ref: "#/components/parameters/ReportFromDate"
+        - $ref: "#/components/parameters/ReportToDate"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessReportResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /reports/departments:
+    get:
+      operationId: getDepartmentsReport
+      tags: [Reports]
+      summary: RPT-03 — average task duration vs SLA by department
+      description: |
+        Completed tasks (`taskStatus = completed`) with `completedAt` in the reporting window,
+        joined to quotations in scope. **`avgDurationHours`** uses `completedAt - startedAt`;
+        **`avgSlaHours`** uses snapshotted `slaDurationHours`.
+
+        **SALES → 403** (matches frontend `canAccessReportTab`). Optional `department` filters to one `taskType`.
+      parameters:
+        - $ref: "#/components/parameters/ReportFromDate"
+        - $ref: "#/components/parameters/ReportToDate"
+        - $ref: "#/components/parameters/ReportDepartment"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DepartmentsReportResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /reports/resubmit:
+    get:
+      operationId: getResubmitReport
+      tags: [Reports]
+      summary: RPT-04 — re-submit rate, average cycles, monthly series
+      description: |
+        Quotations created in period with at least one submitted cycle.
+        **`avgResubmitRate`** = share of those quotations that have a `re_submit` cycle.
+        **`avgCyclesPerQuotation`** = mean submitted cycle count per quotation.
+        **`monthlySeries`** groups by month of `workflow_cycles.submitted_at` in the date window.
+        SALES scope: own quotations only.
+      parameters:
+        - $ref: "#/components/parameters/ReportFromDate"
+        - $ref: "#/components/parameters/ReportToDate"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResubmitReportResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+components:
+  securitySchemes:
+    cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    QuotationCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^BG-\\d{6,}$"
+    TaskType:
+      name: taskType
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - executor_intake
+          - qa_review
+          - rnd_review
+          - executor_consolidation
+          - accounting_review
+          - director_review
+    Query:
+      name: q
+      in: query
+      schema:
+        type: string
+    WorkflowStatus:
+      name: workflowStatus
+      in: query
+      schema:
+        $ref: "#/components/schemas/WorkflowStatus"
+    BusinessOutcome:
+      name: businessOutcome
+      in: query
+      schema:
+        $ref: "#/components/schemas/BusinessOutcome"
+    CycleType:
+      name: cycleType
+      in: query
+      schema:
+        type: string
+        enum: [new, re_submit]
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    SlaAlertState:
+      name: slaAlertState
+      in: query
+      schema:
+        $ref: "#/components/schemas/SlaAlertState"
+    ReportFromDate:
+      name: fromDate
+      in: query
+      description: ISO date (YYYY-MM-DD). Default = today − 30 days (OQ-RPT-02).
+      schema:
+        type: string
+        format: date
+    ReportToDate:
+      name: toDate
+      in: query
+      description: ISO date (YYYY-MM-DD). Default = today (UTC).
+      schema:
+        type: string
+        format: date
+    ReportDepartment:
+      name: department
+      in: query
+      description: Filter by workflow task type (department). Used on operations and departments reports.
+      schema:
+        type: string
+        enum:
+          - executor_intake
+          - qa_review
+          - rnd_review
+          - executor_consolidation
+          - accounting_review
+          - director_review
+  schemas:
+    ReportPeriodMeta:
+      type: object
+      required: [fromDate, toDate, periodAnchor]
+      properties:
+        fromDate:
+          type: string
+          format: date
+        toDate:
+          type: string
+          format: date
+        periodAnchor:
+          type: string
+          enum: [quotationCreatedAt]
+          description: Interim anchor; may change when OQ-RPT-05/06 close.
+    OperationsReportResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReportPeriodMeta"
+        - type: object
+          required: [total, byWorkflowStatus]
+          properties:
+            total:
+              type: integer
+            byWorkflowStatus:
+              type: array
+              items:
+                type: object
+                required: [workflowStatus, count]
+                properties:
+                  workflowStatus:
+                    $ref: "#/components/schemas/WorkflowStatus"
+                  count:
+                    type: integer
+    BusinessReportResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReportPeriodMeta"
+        - type: object
+          required: [sent, won, lost, totalWonValue]
+          properties:
+            sent:
+              type: integer
+              description: sent_to_customer + won + lost
+            won:
+              type: integer
+            lost:
+              type: integer
+            winRate:
+              type: number
+              nullable: true
+              description: won / sent when sent > 0 (OQ-RPT-05 pending)
+            totalWonValue:
+              type: number
+              description: VNĐ; latest approved cycle per won quotation (OQ-RPT-06)
+    DepartmentReportRow:
+      type: object
+      required: [taskType, departmentLabel, completedTasks, overSlaCount]
+      properties:
+        taskType:
+          type: string
+        departmentLabel:
+          type: string
+        avgDurationHours:
+          type: number
+          nullable: true
+        avgSlaHours:
+          type: number
+          nullable: true
+        completedTasks:
+          type: integer
+        overSlaCount:
+          type: integer
+    DepartmentsReportResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReportPeriodMeta"
+        - type: object
+          required: [departments]
+          properties:
+            departments:
+              type: array
+              items:
+                $ref: "#/components/schemas/DepartmentReportRow"
+    ResubmitMonthlyPoint:
+      type: object
+      required: [month, submittedQuotations, quotationsWithResubmit]
+      properties:
+        month:
+          type: string
+          description: YYYY-MM
+        submittedQuotations:
+          type: integer
+        quotationsWithResubmit:
+          type: integer
+        resubmitRate:
+          type: number
+          nullable: true
+    ResubmitReportResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReportPeriodMeta"
+        - type: object
+          required: [monthlySeries]
+          properties:
+            avgResubmitRate:
+              type: number
+              nullable: true
+            avgCyclesPerQuotation:
+              type: number
+              nullable: true
+            submittedQuotations:
+              type: integer
+            quotationsWithResubmit:
+              type: integer
+            monthlySeries:
+              type: array
+              items:
+                $ref: "#/components/schemas/ResubmitMonthlyPoint"
+    SlaAlertState:
+      type: string
+      enum: [normal, warning, overdue]
+    WorkflowStatus:
+      type: string
+      enum:
+        - draft
+        - cancelled
+        - executor_intake
+        - qa_rnd_review
+        - executor_consolidation
+        - accounting_review
+        - director_review
+        - approved
+        - rejected
+    BusinessOutcome:
+      type: string
+      enum: [not_updated, sent_to_customer, won, lost]
+    Quotation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        salesOwnerUsername:
+          type: string
+        customerId:
+          type: string
+          format: uuid
+        customerCode:
+          type: string
+        customerName:
+          type: string
+        contactId:
+          type: string
+          format: uuid
+          nullable: true
+        workflowStatus:
+          $ref: "#/components/schemas/WorkflowStatus"
+        businessOutcome:
+          $ref: "#/components/schemas/BusinessOutcome"
+        currentCycleId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        finalQuotationValue:
+          type: number
+          nullable: true
+          description: From current cycle `quotation_accounting_data` when present (list joins).
+    SalesData:
+      type: object
+      description: |
+        Cycle-level Sales header (delivery location, notes, legacy optional carton fields).
+        Carton spec for submit is validated on **lineItems** (PRICE-FORMAT / LIN-02…08), not single-row SAL dimensions.
+      properties:
+        boxType:
+          type: string
+          deprecated: true
+        lengthMm:
+          type: number
+          deprecated: true
+        widthMm:
+          type: number
+          deprecated: true
+        heightMm:
+          type: number
+          deprecated: true
+        dimensionType:
+          type: string
+          enum: [inner, outer]
+          deprecated: true
+        material:
+          type: string
+          deprecated: true
+        layerCount:
+          type: integer
+          deprecated: true
+        fluteType:
+          type: string
+          deprecated: true
+        productLoadKg:
+          type: number
+          deprecated: true
+        printingDescription:
+          type: string
+          deprecated: true
+        printColorCount:
+          type: integer
+          deprecated: true
+        printSideCount:
+          type: integer
+          deprecated: true
+        quantityPieces:
+          type: integer
+          deprecated: true
+        deliveryLocation:
+          type: string
+        desiredDeliveryTime:
+          type: string
+        salesNote:
+          type: string
+        additionalRequirements:
+          type: string
+    LineItem:
+      type: object
+      required:
+        - id
+        - lineNumber
+        - itemName
+        - fluteType
+        - lengthMm
+        - widthMm
+        - heightMm
+        - quantity
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineNumber:
+          type: integer
+          minimum: 1
+        itemCode:
+          type: string
+          nullable: true
+          description: LIN-01 (optional on submit)
+        itemName:
+          type: string
+        fluteType:
+          type: string
+        lengthMm:
+          type: number
+        widthMm:
+          type: number
+        heightMm:
+          type: number
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          nullable: true
+          description: LIN-07 / EXC-01 — EXECUTOR; required on complete consolidation
+        lineRemark:
+          type: string
+          nullable: true
+    LineItemSalesInput:
+      type: object
+      required: [itemName, fluteType, lengthMm, widthMm, heightMm, quantity]
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        itemCode:
+          type: string
+        itemName:
+          type: string
+        fluteType:
+          type: string
+        lengthMm:
+          type: number
+        widthMm:
+          type: number
+        heightMm:
+          type: number
+        quantity:
+          type: integer
+          minimum: 1
+        lineRemark:
+          type: string
+    LineItemConsolidationPatch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineNumber:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          minimum: 0
+        lineRemark:
+          type: string
+      description: Identify row by `id` or `lineNumber`.
+    ExecutorConsolidationData:
+      type: object
+      properties:
+        deliveryTerms:
+          type: string
+          description: EXC-05
+        consolidationNote:
+          type: string
+          description: EXC-06
+    ExecutorConsolidationPayload:
+      allOf:
+        - $ref: "#/components/schemas/ExecutorConsolidationData"
+        - type: object
+          properties:
+            lineItems:
+              type: array
+              items:
+                $ref: "#/components/schemas/LineItemConsolidationPatch"
+    CreateQuotationRequest:
+      allOf:
+        - type: object
+          required: [customerId]
+          properties:
+            customerId:
+              type: string
+              format: uuid
+            contactId:
+              type: string
+              format: uuid
+              nullable: true
+        - $ref: "#/components/schemas/SalesData"
+        - type: object
+          properties:
+            lineItems:
+              type: array
+              description: Optional initial line items for the first cycle.
+              items:
+                $ref: "#/components/schemas/LineItemSalesInput"
+    UpdateQuotationDraftRequest:
+      allOf:
+        - type: object
+          properties:
+            customerId:
+              type: string
+              format: uuid
+            contactId:
+              type: string
+              format: uuid
+              nullable: true
+            version:
+              type: integer
+            lineItems:
+              type: array
+              description: |
+                **Full replace** of line items on the current cycle when present (Sales owner, unsubmitted cycle).
+                Omitted = unchanged. `[]` removes all lines. `unitPrice` is ignored on this route.
+              items:
+                $ref: "#/components/schemas/LineItemSalesInput"
+        - $ref: "#/components/schemas/SalesData"
+    QuotationDetailResponse:
+      type: object
+      properties:
+        quotation:
+          $ref: "#/components/schemas/Quotation"
+        currentCycle:
+          type: object
+        salesData:
+          $ref: "#/components/schemas/SalesData"
+        lineItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/LineItem"
+        qaData:
+          $ref: "#/components/schemas/QaData"
+        rndData:
+          $ref: "#/components/schemas/RndData"
+        developmentMinutes:
+          allOf:
+            - $ref: "#/components/schemas/DevelopmentMinutes"
+          nullable: true
+        executorIntake:
+          type: object
+        executorConsolidation:
+          $ref: "#/components/schemas/ExecutorConsolidationData"
+        accountingData:
+          type: object
+        directorData:
+          $ref: "#/components/schemas/DirectorData"
+        customerSnapshot:
+          type: object
+        tasks:
+          type: array
+          items:
+            type: object
+    QuotationListResponse:
+      type: object
+      properties:
+        quotations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Quotation"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    QuotationTask:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        quotationId:
+          type: string
+          format: uuid
+        cycleId:
+          type: string
+          format: uuid
+        taskType:
+          type: string
+          enum:
+            - executor_intake
+            - qa_review
+            - rnd_review
+            - executor_consolidation
+            - accounting_review
+            - director_review
+        taskStatus:
+          type: string
+          enum: [pending, in_progress, completed]
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaStartedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaDeadlineAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaCompletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaDurationHours:
+          type: number
+          nullable: true
+        slaAlertState:
+          $ref: "#/components/schemas/SlaAlertState"
+    TaskInboxItem:
+      type: object
+      required: [quotation, task]
+      properties:
+        quotation:
+          $ref: "#/components/schemas/Quotation"
+        task:
+          $ref: "#/components/schemas/QuotationTask"
+    TaskInboxResponse:
+      type: object
+      required: [tasks, total, page, pageSize]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskInboxItem"
+        total:
+          type: integer
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+    QaLineItemData:
+      type: object
+      required: [lineNumber]
+      description: |
+        Full per-line QA (`QaLineDataRow`) — sample standards, paper layers, technical run, and `runPaperStructures` jsonb.
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+          description: Must match `lineItems[].lineNumber` for the current cycle.
+        qualityAssessmentResult:
+          type: string
+          nullable: true
+        qualityRequirements:
+          type: string
+          nullable: true
+        qaNote:
+          type: string
+          nullable: true
+        burstStandard:
+          type: string
+          nullable: true
+          description: QA-09
+        compressionStandard:
+          type: string
+          nullable: true
+          description: QA-10
+        weightLimitStandard:
+          type: string
+          nullable: true
+          description: QA-11
+        kcgStandard:
+          type: string
+          nullable: true
+          description: QA-12
+        kcgQaSxProposal1:
+          type: string
+          nullable: true
+          description: QA-13
+        kcgQaSxProposal2:
+          type: string
+          nullable: true
+          description: QA-14
+        kcgQaSxProposal3:
+          type: string
+          nullable: true
+          description: QA-15
+        edgeCrushStandard:
+          type: string
+          nullable: true
+        slipAngleStandard:
+          type: string
+          nullable: true
+        waterproofStandard:
+          type: string
+          nullable: true
+        facePaperType:
+          type: string
+          nullable: true
+        faceBasisWeight:
+          type: string
+          nullable: true
+        flutePaperType:
+          type: string
+          nullable: true
+        fluteBasisWeight:
+          type: string
+          nullable: true
+        middlePaperType:
+          type: string
+          nullable: true
+        middleBasisWeight:
+          type: string
+          nullable: true
+        flute2PaperType:
+          type: string
+          nullable: true
+        flute2BasisWeight:
+          type: string
+          nullable: true
+        middle2PaperType:
+          type: string
+          nullable: true
+        middle2BasisWeight:
+          type: string
+          nullable: true
+        flute3PaperType:
+          type: string
+          nullable: true
+        flute3BasisWeight:
+          type: string
+          nullable: true
+        bottomPaperType:
+          type: string
+          nullable: true
+        bottomBasisWeight:
+          type: string
+          nullable: true
+        runQualityAssessmentResult:
+          type: string
+          nullable: true
+        runQaNote:
+          type: string
+          nullable: true
+        runBurstStandard:
+          type: string
+          nullable: true
+        runCompressionStandard:
+          type: string
+          nullable: true
+        runWeightLimitStandard:
+          type: string
+          nullable: true
+        runKcgStandard:
+          type: string
+          nullable: true
+        runEdgeCrushStandard:
+          type: string
+          nullable: true
+        runSlipAngleStandard:
+          type: string
+          nullable: true
+        runWaterproofStandard:
+          type: string
+          nullable: true
+        runKcgQaSxProposal1:
+          type: string
+          nullable: true
+        runFacePaperType:
+          type: string
+          nullable: true
+        runFaceBasisWeight:
+          type: string
+          nullable: true
+        runFlutePaperType:
+          type: string
+          nullable: true
+        runFluteBasisWeight:
+          type: string
+          nullable: true
+        runMiddlePaperType:
+          type: string
+          nullable: true
+        runMiddleBasisWeight:
+          type: string
+          nullable: true
+        runFlute2PaperType:
+          type: string
+          nullable: true
+        runFlute2BasisWeight:
+          type: string
+          nullable: true
+        runMiddle2PaperType:
+          type: string
+          nullable: true
+        runMiddle2BasisWeight:
+          type: string
+          nullable: true
+        runFlute3PaperType:
+          type: string
+          nullable: true
+        runFlute3BasisWeight:
+          type: string
+          nullable: true
+        runBottomPaperType:
+          type: string
+          nullable: true
+        runBottomBasisWeight:
+          type: string
+          nullable: true
+        runPaperStructures:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              paperTypes:
+                type: array
+                items:
+                  type: string
+              basisWeights:
+                type: array
+                items:
+                  type: string
+    RndLineItemData:
+      type: object
+      required: [lineNumber]
+      description: Per quotation line — RND-01, RND-02, RND-11, RND-05.
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        printingPlateCost:
+          type: number
+          minimum: 0
+          nullable: true
+          description: RND-01
+        dieCost:
+          type: number
+          minimum: 0
+          nullable: true
+          description: RND-02
+        productionPlan:
+          type: string
+          nullable: true
+          description: RND-11 production steps (e.g. separated by `>`); non-whitespace required for task complete.
+        rndNote:
+          type: string
+          nullable: true
+          description: RND-05
+        layoutCode:
+          type: string
+          nullable: true
+        layoutQuoteCode:
+          type: string
+          nullable: true
+        dieCode:
+          type: string
+          nullable: true
+        dieQuoteCode:
+          type: string
+          nullable: true
+    QaData:
+      type: object
+      required: [qaLineData]
+      description: Per-line QA rows (`quotation_line_qa`), ordered by `lineNumber`.
+      properties:
+        qaLineData:
+          type: array
+          items:
+            $ref: "#/components/schemas/QaLineItemData"
+          description: One element per current-cycle line; may be `[]` before fill or when there are no lines.
+      example:
+        qaLineData:
+          - lineNumber: 1
+            qualityAssessmentResult: Đạt
+            burstStandard: "≥ 800 kPa"
+            compressionStandard: "≥ 4000 N"
+            weightLimitStandard: "≤ 15 kg"
+            kcgStandard: Đạt Tiger spec
+            kcgQaSxProposal1: Đề xuất 1
+            kcgQaSxProposal2: Đề xuất 2
+            kcgQaSxProposal3: null
+    QaDataPut:
+      type: object
+      required: [qaLineData]
+      properties:
+        qaLineData:
+          type: array
+          items:
+            $ref: "#/components/schemas/QaLineItemData"
+    RndData:
+      type: object
+      required: [rndLineData]
+      description: Per-line R&D rows (`quotation_line_rnd`), ordered by `lineNumber`.
+      properties:
+        rndLineData:
+          type: array
+          items:
+            $ref: "#/components/schemas/RndLineItemData"
+          description: One element per current-cycle line.
+      example:
+        rndLineData:
+          - lineNumber: 1
+            printingPlateCost: 1500000
+            dieCost: 800000
+            productionPlan: in cuộn > sóng > bế > đóng pallet
+            rndNote: null
+    RndDataPut:
+      type: object
+      required: [rndLineData]
+      properties:
+        rndLineData:
+          type: array
+          items:
+            $ref: "#/components/schemas/RndLineItemData"
+    DirectorLineDecision:
+      type: object
+      required: [lineNumber, decision]
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+          enum: [approved, rejected]
+        approvalNote:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+          description: Required when `decision` is `rejected`.
+    DirectorDecisionRequest:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/DirectorLineDecision"
+        version:
+          type: integer
+          description: Optimistic lock on `quotations.version`.
+    DirectorLineData:
+      type: object
+      required: [lineNumber]
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        directorDecision:
+          type: string
+          nullable: true
+          enum: [approved, rejected]
+        approvalNote:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+        decisionAt:
+          type: string
+          format: date-time
+          nullable: true
+    DirectorData:
+      type: object
+      required: [directorLineData]
+      properties:
+        directorLineData:
+          type: array
+          items:
+            $ref: "#/components/schemas/DirectorLineData"
+          description: One row per line (`quotation_line_director`); decisions null until director submits.
+    DevelopmentMinutesParticipant:
+      type: object
+      required: [seq, fullName, department]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+        fullName:
+          type: string
+        department:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+    DevelopmentMinutesPrintPlate:
+      type: object
+      required: [plateNo]
+      properties:
+        plateNo:
+          type: integer
+          minimum: 1
+          maximum: 7
+        colorSystem:
+          type: string
+          nullable: true
+        trame:
+          type: string
+          nullable: true
+        anilox:
+          type: string
+          nullable: true
+    DevelopmentMinutesPayload:
+      type: object
+      properties:
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevelopmentMinutesParticipant"
+        printPlates:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevelopmentMinutesPrintPlate"
+        designNotes:
+          type: string
+          nullable: true
+        sampleBoxNotes:
+          type: string
+          nullable: true
+        finishDieCut:
+          type: string
+          nullable: true
+        finishGlue:
+          type: string
+          nullable: true
+        finishStaple:
+          type: string
+          nullable: true
+        uvCoating:
+          type: string
+          nullable: true
+        bundlingMethod:
+          type: string
+          nullable: true
+        palletNotes:
+          type: string
+          nullable: true
+        shippingNotes:
+          type: string
+          nullable: true
+        otherNotes:
+          type: string
+          nullable: true
+        meetingConclusion:
+          type: string
+          nullable: true
+    DevelopmentMinutesInput:
+      type: object
+      properties:
+        meetingPlace:
+          type: string
+          nullable: true
+        meetingDate:
+          type: string
+          format: date
+          nullable: true
+        payload:
+          $ref: "#/components/schemas/DevelopmentMinutesPayload"
+    DevelopmentMinutes:
+      allOf:
+        - $ref: "#/components/schemas/DevelopmentMinutesInput"
+        - type: object
+          properties:
+            updatedAt:
+              type: string
+              format: date-time
+              nullable: true
+    AttachmentSection:
+      type: string
+      enum:
+        - sales
+        - qa
+        - rnd
+        - executor_intake
+        - executor_consolidation
+        - accounting
+      description: Matches `attachment_section_enum` / validation `ATTACHMENT_SECTIONS`.
+    PresignAttachmentRequest:
+      type: object
+      required: [fileName, mimeType, section, size]
+      properties:
+        fileName:
+          type: string
+        mimeType:
+          type: string
+        section:
+          $ref: "#/components/schemas/AttachmentSection"
+        size:
+          type: integer
+          minimum: 1
+          description: Size in bytes (server enforces per-category limits).
+    Attachment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        quotationId:
+          type: string
+          format: uuid
+        cycleId:
+          type: string
+          format: uuid
+        section:
+          $ref: "#/components/schemas/AttachmentSection"
+        fileName:
+          type: string
+        fileExtension:
+          type: string
+        mimeType:
+          type: string
+        fileSizeBytes:
+          type: integer
+        storageKey:
+          type: string
+        uploadedBy:
+          type: string
+        uploadedByRole:
+          type: string
+        uploadedAt:
+          type: string
+          format: date-time
+          nullable: true
+        sourceAttachmentId:
+          type: string
+          format: uuid
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+    Revision:
+      type: object
+    HistoryResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+        auditEvents:
+          type: array
+          items:
+            type: object
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Role denied (incl. ADMIN workflow mutation)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Not found or SALES scope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Version mismatch or invalid state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

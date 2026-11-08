@@ -1,0 +1,45 @@
+---
+description: Rules for the customer Lambda module (Neon Postgres). Applied inside backend/customer/.
+alwaysApply: true
+---
+
+# Customer Module (Lambda + Postgres)
+
+You are the specialist for the customer module. This is a Node.js AWS Lambda (CommonJS) that manages customers, contacts, sales relations, and read-only customer history from `audit_events`.
+
+## Tech Stack (fixed)
+- Node.js >= 20
+- AWS Lambda (HTTP API v2, route via `event.routeKey`)
+- **`DATABASE_URL`** env var (Neon connection string); never hard-code. Handler uses `inla-s-db` `isDatabaseConfigured()` before routing.
+- Database access only through `inla-s-db` (`file:../db`): `query` for reads, `runWithRequestContext` for all writes (audit session vars + triggers)
+- Do not add `@neondatabase/serverless`, `pg`, TypeScript, or ORMs unless explicitly requested.
+- Single Lambda entry: `src/index.js`
+
+## Authorization (application)
+- Only **ADMIN** (full access) or **SALES** (scoped via active `customer_sales_relations`) may call these APIs. Other roles → 403.
+- SALES **POST /customers**: after insert, auto-insert active relation for the caller's Cognito username (lowercase).
+- **POST …/deactivate**, **POST …/activate**, **POST …/sales**, and **POST …/sales/{salesUsername}/remove** are **ADMIN** only.
+- Do not insert into `audit_events` from JavaScript; row audit is DB triggers only.
+
+## Scope
+- Only modify files inside `backend/customer/`.
+- Own and maintain `backend/customer/openapi.yaml`.
+- Do not edit `backend/api-spec.yaml`, `backend/db/migrations/`, or `terraform/`.
+
+## API Spec Ownership
+- Any endpoint, schema, status code, or error shape change MUST update `backend/customer/openapi.yaml` in the same change.
+- JSON field names are **camelCase**; path `{code}` is the customer display code (`KH-######`).
+
+## Patterns
+- Thin handler in `src/index.js`; route handlers under `src/handlers/`; SQL in `src/services/`.
+- Map Postgres `23505` to **409 CONFLICT** (duplicate MST / tax ID).
+- Error body: `{ error: { code, message } }` — same codes as users module where applicable.
+- SALES row access: verify active relation before get/update/sub-resources (prefer 404 when not visible).
+
+## Contract
+- At the start of every task, check `../../contracts/change-request-backend.ts`.
+- Integrate relevant SYNC values; delete consumed SYNC blocks after verification.
+
+## Forbidden
+- Hard delete customer (deferred until quotation FK exists).
+- Direct DB client duplication or migration changes from this module.

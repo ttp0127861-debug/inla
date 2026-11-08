@@ -1,0 +1,48 @@
+---
+description: Backend parent rules for INLA-S. Always applied when working under backend/.
+alwaysApply: true
+---
+
+# Backend (INLA-S)
+
+You are working inside the backend of INLA-S. Backend is composed of multiple sub-modules. Each sub-module has its own detailed rules.
+
+## Scope
+- You may read any file under `backend/` for understanding.
+- Prefer making changes inside the specific sub-module that owns the feature.
+- The single source of truth for the entire API surface is `backend/api-spec.yaml`.
+
+## Contract
+- Automatically check `../contracts/change-request-backend.ts` at the start of every task.
+- If a SYNC block applies to any backend module, integrate the relevant infrastructure values.
+- After successful integration and verification, delete the consumed SYNC block.
+- If nothing applies, continue silently.
+
+## API Spec Aggregation
+- `backend/api-spec.yaml` is the single aggregated API spec for the whole backend.
+- It must include (via `$ref` or an equivalent mechanism) the OpenAPI specs of all sub-modules (e.g. `backend/users/openapi.yaml`).
+- Do not manually copy or merge content from sub-module specs into the parent file.
+- If the include/aggregation mechanism is missing or broken, report it instead of rewriting the aggregated file yourself.
+- Consumers (Frontend, other agents, docs) should rely on `backend/api-spec.yaml`, not on individual module specs.
+
+## API Spec Rule
+- Any change that adds, removes, or modifies an API endpoint must be reflected in the relevant sub-module’s OpenAPI file.
+- The parent `api-spec.yaml` stays consistent through its include mechanism, not through manual edits by module agents.
+- Do not finish an API-related task if the sub-module spec is out of date.
+
+## Database configuration
+- All Postgres access uses shared `inla-s-db` (`backend/db`). Connection string: **`process.env.DATABASE_URL`** only (see `isDatabaseConfigured()` / `readDatabaseUrl()` in `db/src/index.js`).
+- DB-backed Lambdas (`customer`, `quotation`) must fail fast at handler entry if `DATABASE_URL` is missing or blank.
+- Migrations/seeds: `node-pg-migrate` with `--database-url-var DATABASE_URL` (see `backend/db/package.json`).
+
+## Forbidden
+- Do not modify `terraform/` or `frontend/`.
+- Do not hard-code infrastructure identifiers (user pool id, API URL, ARNs, Postgres URLs). Take them from the contract or environment.
+- Do not introduce alternate DB env names (`DB_URL`, `POSTGRES_URL`, etc.) in backend code.
+- Do not create additional top-level API spec files outside of `backend/api-spec.yaml`.
+- Do not let module agents directly edit `backend/api-spec.yaml`.
+
+## Behavior
+- If the task clearly belongs to one sub-module, follow that module’s rules strictly.
+- If a request is unclear which module it belongs to, ask before making changes.
+- Keep cross-module changes minimal and explicit.

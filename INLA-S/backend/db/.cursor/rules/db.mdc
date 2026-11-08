@@ -1,0 +1,66 @@
+---
+description: Rules for the shared database module (Neon Postgres). Handles schema, migrations, and client. Applied inside backend/db/.
+alwaysApply: true
+---
+
+# Database Module (Neon Postgres)
+
+You are the specialist for the shared database module. This module owns the Neon Postgres connection, schema migrations, and the database client used by other backend sub-modules.
+
+## Tech Stack (fixed)
+- Neon Serverless Postgres
+- Node.js >= 20
+- Runtime queries: `@neondatabase/serverless` `neon()` over HTTPS. Lambda handlers must not open a TCP pool.
+- Migration tool: node-pg-migrate, only through `npm run migrate`, using `DATABASE_URL`
+- Do not introduce another database provider or ORM unless explicitly requested.
+
+## Ownership
+- Own everything under `backend/db/`.
+- Own all schema changes through migration files in `backend/db/migrations/`.
+- Export `query(text, params)`, `transaction(fn)`, and `runWithRequestContext(event, fn)` from `src/index.js`.
+- Other backend modules must not create their own pools, `pg` clients, or `neon()` instances, and they must not write migration files.
+
+## Migration Rules
+- Every schema change must be implemented as a new migration file. Never modify the database manually or only in application code.
+- Migration files are forward-only and must be committed to Git.
+- Do not run migrations during build, packaging, or inside Lambda handlers.
+- Migrations are executed only via the dedicated migrate command (e.g. `npm run migrate`), which reads `DATABASE_URL` from the environment or contract.
+- Before finishing a task that includes a migration, ensure the migration file is correct and the migrate command is documented or scripted.
+
+## Connection & Configuration
+- Never hard-code the Neon connection string, host, user, or password.
+- Read `DATABASE_URL` from environment variables or from `../../contracts/change-request-backend.ts` when relevant values appear.
+- The HTTP client and node-pg-migrate both use that same `DATABASE_URL`. Do not add a second connection string.
+- Do not log or expose the full connection string.
+
+## Client Usage
+- Other modules import `{ query, transaction, runWithRequestContext }` from this module.
+- `query` sends one SQL statement over HTTPS with `@neondatabase/serverless`. It returns a node-postgres-shaped result (`rows`, `rowCount`, `fields`, `command`). Use it for reads.
+- Writes that must be audited use `runWithRequestContext`. It sets `audit.actor_username`, `audit.actor_role`, and `audit.request_id` with three separate `set_config` calls, then runs the caller's statements in that same HTTP transaction.
+- The callback is synchronous and returns an array of `txn.query(...)` calls. HTTP transactions cannot wait between statements.
+- Do not export a pool. Do not instantiate `pg` Pool or Client, or `@neondatabase/serverless` `Pool` or `neon()`, anywhere outside this module.
+- Importing the module must not connect or migrate. The first `query` or transaction performs the HTTPS request.
+- Log query failures without the connection string, then rethrow. HTTPS covers Neon’s transport security for runtime queries.
+
+## Contract
+- At the start of every task, check `../../contracts/change-request-backend.ts`.
+- If a SYNC block contains database-related values (e.g. `DATABASE_URL` or Neon connection info), integrate them into the module’s configuration.
+- Delete the consumed SYNC block only after verifying the configuration is correct.
+
+## Schema authority
+- The single source of truth for the database model is `backend/db/SCHEMA.md` (same directory as this rule).
+- **Quotation (pre-merge):** read `backend/db/repo/` (`quotation-schema.md`, `quotation-audit-checklist.md`, `quotation-db-agent-task.md`, `document-index.md`) before updating `SCHEMA.md` or adding migrations.
+- Do not infer schema from `document/*.md` (without checking annex/deltas) or frontend mocks when `SCHEMA.md` applies — except via the repo draft and doc index above for quotation work.
+- If the task conflicts with that file, ask before migrating.
+
+## Quality
+- Make the smallest change that solves the request.
+- Keep migration files focused and well-named (e.g. `001_init.sql`, `002_add_customers_table.sql`).
+- After adding a migration, verify it can be applied cleanly against a Neon branch or local test if possible.
+- Do not refactor unrelated migrations or client code.
+
+## Forbidden
+- Do not modify other backend modules, `terraform/`, `frontend/`, or `backend/api-spec.yaml`.
+- Do not run migrations automatically on import or in request handlers.
+- Do not store credentials in code or in non-sensitive outputs.
+- Do not bypass the migration mechanism.

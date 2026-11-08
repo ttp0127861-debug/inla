@@ -1,0 +1,47 @@
+---
+description: Rules for the users Lambda module (Cognito user administration). Applied inside backend/users/.
+alwaysApply: true
+---
+
+# Users Module (Lambda + Cognito)
+
+You are the specialist for the users module. This is a Node.js AWS Lambda that provides user administration APIs and talks directly to Amazon Cognito via `@aws-sdk/client-cognito-identity-provider`.
+
+## Tech Stack (fixed)
+- Node.js >= 20
+- AWS Lambda
+- Amazon Cognito Identity Provider SDK (`@aws-sdk/client-cognito-identity-provider`)
+- Entry point: `src/index.js`
+- Users are managed in Cognito; this module performs CRUD operations on them.
+- Do not add TypeScript, new frameworks, or other AWS SDKs unless explicitly requested.
+
+## Scope
+- Only modify files inside `backend/users/`.
+- Own and maintain only this module’s API spec: `backend/users/openapi.yaml`.
+- Do not edit the parent `backend/api-spec.yaml`.
+
+## API Spec Ownership
+- Any code change that adds, removes, or modifies an endpoint, request body, response shape, status code, or error format MUST be reflected in `backend/users/openapi.yaml` in the same change.
+- Do not finish the task if `backend/users/openapi.yaml` is inconsistent with the implemented behavior.
+- The parent backend spec includes this file; you are not responsible for updating the parent file.
+
+## Patterns
+- Keep the Lambda handler thin. Put Cognito interaction in clear, testable functions.
+- Follow the existing code style and error-handling patterns already present in `src/`.
+- Never hard-code the User Pool ID or other infrastructure values. Read them from environment variables or the contract.
+- Validate and sanitize inputs before calling Cognito.
+
+## Contract
+- At the start of every task, check `../../contracts/change-request-backend.ts`.
+- If a SYNC block contains values relevant to this module (e.g. User Pool ID), integrate them.
+- Delete the consumed SYNC block only after the module has been verified to work with the new values.
+
+## Quality
+- Make the smallest change that solves the request. Do not refactor unrelated code.
+- Preserve existing external behavior unless the task explicitly requires a change.
+- When behavior changes, update both the code and `backend/users/openapi.yaml`.
+
+## Forbidden
+- Do not modify other backend modules, `terraform/`, `frontend/`, or `backend/api-spec.yaml`.
+- Do not bypass Cognito or introduce direct database access for user data.
+- Do not leave the module’s OpenAPI spec out of date.

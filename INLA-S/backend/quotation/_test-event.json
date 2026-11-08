@@ -1,0 +1,16 @@
+{
+  "routeKey": "GET /quotations",
+  "queryStringParameters": { "pageSize": "50" },
+  "requestContext": {
+    "requestId": "test",
+    "authorizer": {
+      "jwt": {
+        "claims": {
+          "cognito:groups": "ADMIN",
+          "email": "test.admin@inla.vn",
+          "cognito:username": "test.admin@inla.vn"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,103 @@
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text-strong);
+  background: var(--color-surface-background);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: none;
+  }
+}
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  html,
+  body,
+  #root,
+  body[data-print] .h-screen,
+  body[data-print] main {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .print-hide {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  body[data-print="qa"] [data-print-root="rnd"],
+  body[data-print="rnd"] [data-print-root="qa"] {
+    display: none !important;
+  }
+}
+
+.ui-spinner,
+.ui-spin {
+  flex: none;
+  animation: ui-spin 0.7s linear infinite;
+}
+
+.ui-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+}
+
+.ui-spin {
+  display: inline-flex;
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #f3f4f6 0%, #e5e7eb 45%, #f3f4f6 90%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}

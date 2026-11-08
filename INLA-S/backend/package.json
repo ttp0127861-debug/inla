@@ -1,0 +1,11 @@
+{
+  "name": "inla-s-backend",
+  "private": true,
+  "description": "INLA-S backend workspace — aggregated OpenAPI and shared tooling",
+  "scripts": {
+    "api-spec:merge": "node scripts/merge-api-spec.mjs"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^1.34.5"
+  }
+}

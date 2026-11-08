@@ -1,0 +1,13 @@
+{
+  "name": "inla-s-customer",
+  "private": true,
+  "description": "INLA-S customer management Lambda.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.700.0",
+    "inla-s-db": "file:../db"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "documentCode": "PRICE-FORMAT",
+  "title": "Price format (EXECUTOR báo giá)",
+  "version": "1.0",
+  "effectiveDate": "2026-11-06",
+  "source": "Khách hàng — mẫu phòng EXECUTOR (Kế hoạch)",
+  "templateFile": "PRICE-FORMAT.xlsx",
+  "headerColumns": [
+    "itemCode",
+    "itemName",
+    "customer",
+    "flute",
+    "length",
+    "width",
+    "height",
+    "price",
+    "dieCutMoldCost",
+    "printingPlateCost",
+    "qty",
+    "remark"
+  ],
+  "inSystemScope": {
+    "fieldMap": "document/annex/PRICE-FORMAT-field-map.md",
+    "annex": "document/annex/Annex_PRICE-FORMAT_LineItems_MVP.md",
+    "specDelta": "document/spec-deltas/2026-11-06-PRICE-FORMAT-line-items.md"
+  }
+}

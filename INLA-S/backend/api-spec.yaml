@@ -1,0 +1,3968 @@
+openapi: 3.0.3
+info:
+  title: INLA-S Users
+  version: 1.0.0
+  description: >
+    User administration for one Cognito user pool. API Gateway HTTP API invokes
+    the users Lambda (`src/index.handler`).
+
+    The pool id is the `USER_POOL_ID` environment variable. Routes are served
+    from the API host with no stage prefix.
+
+
+    API Gateway validates a Cognito access token on every route. The Lambda then
+    allows only tokens whose `cognito:groups` claim includes `ADMIN`.
+
+
+    Users written by this API have exactly one role. At most one enabled user
+    may have the role `EXECUTOR`.
+
+    `level` is stored in the Cognito attribute `custom:level`. Phone numbers are
+    stored as E.164.
+
+    This API has no delete route. A created user is deleted only to roll back a
+    create that fails while the role is assigned.
+servers:
+  - url: https://{apiHost}
+    description: >-
+      Users HTTP API. The `$default` stage is implicit, so paths have no stage
+      prefix.
+    variables:
+      apiHost:
+        default: users-api.example.com
+        description: Hostname of this HTTP API.
+tags:
+  - name: INLA-S_Users_Users
+    description: Cognito user records and their single role group.
+    x-displayName: Users
+  - name: INLA-S_Users_Roles
+    description: Cognito groups used as roles.
+    x-displayName: Roles
+  - name: INLA-S_Customer_Customers
+    x-displayName: Customers
+  - name: INLA-S_Customer_Contacts
+    x-displayName: Contacts
+  - name: INLA-S_Customer_Sales
+    x-displayName: Sales
+  - name: INLA-S_Customer_History
+    x-displayName: History
+  - name: INLA-S_Quotation_Quotations
+    x-displayName: Quotations
+  - name: INLA-S_Quotation_Workflow
+    x-displayName: Workflow
+  - name: INLA-S_Quotation_Tasks
+    x-displayName: Tasks
+  - name: INLA-S_Quotation_RoleData
+    x-displayName: RoleData
+  - name: INLA-S_Quotation_Attachments
+    x-displayName: Attachments
+  - name: INLA-S_Quotation_History
+    x-displayName: History
+  - name: INLA-S_Quotation_CustomerTab
+    x-displayName: CustomerTab
+  - name: INLA-S_Quotation_Reports
+    x-displayName: Reports
+paths:
+  /roles:
+    get:
+      operationId: listRoles
+      tags:
+        - INLA-S_Users_Roles
+      summary: List roles
+      description: >
+        Returns the Cognito groups whose names are roles, in this order:
+
+        `ADMIN`, `DIRECTOR`, `EXECUTOR`, `SALES`, `QA`, `R&D`, `ACCOUNTING`.
+
+        Groups that do not exist in the pool are omitted. Backed by
+        `ListGroups`.
+      responses:
+        '200':
+          description: Roles that exist in the user pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_RoleList'
+              example:
+                roles:
+                  - name: ADMIN
+                    description: Administer users
+                    precedence: 1
+                  - name: SALES
+                    description: ''
+                    precedence: 4
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /users:
+    get:
+      operationId: listUsers
+      tags:
+        - INLA-S_Users_Users
+      summary: List users
+      description: >
+        Lists Cognito users and each user's role group (`ListUsers`, then
+        `AdminListGroupsForUser`).
+
+        Reading stops when the pool is exhausted or 1000 users have been read,
+        then filters and paginates in memory.
+
+        Default pagination: page 1, pageSize 20 when query params are omitted.
+
+        Filters are combined. A user is included only when every supplied filter
+        matches.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Users_Query'
+        - $ref: '#/components/parameters/INLA-S_Users_Role'
+        - $ref: '#/components/parameters/INLA-S_Users_Enabled'
+        - $ref: '#/components/parameters/INLA-S_Users_Page'
+        - $ref: '#/components/parameters/INLA-S_Users_PageSize'
+      responses:
+        '200':
+          description: >-
+            Users that match the filters. The array is empty when nothing
+            matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserList'
+              example:
+                users:
+                  - username: person@inla.vn
+                    email: person@inla.vn
+                    name: Nguyen Van A
+                    phoneNumber: '+84901234567'
+                    level: staff
+                    role: SALES
+                    enabled: true
+                    status: CONFIRMED
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+    post:
+      operationId: createUser
+      tags:
+        - INLA-S_Users_Users
+      summary: Create a user
+      description: >
+        Creates a Cognito user with `AdminCreateUser`, using the email as the
+        username, and emails a temporary password.
+
+        The user is then added to the role group with `AdminAddUserToGroup`.
+
+        If assigning the group fails, the new user is deleted with
+        `AdminDeleteUser` and the original error is returned.
+
+        Creating an `EXECUTOR` is rejected when another enabled `EXECUTOR`
+        already exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Users_CreateUserRequest'
+            example:
+              email: person@inla.vn
+              name: Nguyen Van A
+              phoneNumber: '0901234567'
+              role: SALES
+              level: staff
+      responses:
+        '201':
+          description: The created user, including the assigned role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserResponse'
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: '+84901234567'
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: FORCE_CHANGE_PASSWORD
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '409':
+          description: >-
+            The email is already a user, or another enabled EXECUTOR already
+            exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_Error'
+              examples:
+                emailExists:
+                  summary: Email already exists
+                  value:
+                    error:
+                      code: CONFLICT
+                      message: A user with this email already exists.
+                executorExists:
+                  summary: Active EXECUTOR already exists
+                  value:
+                    error:
+                      code: CONFLICT
+                      message: Only one active EXECUTOR is allowed.
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+        '502':
+          $ref: '#/components/responses/INLA-S_Users_EmailFailed'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /users/{username}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Users_Username'
+    get:
+      operationId: getUser
+      tags:
+        - INLA-S_Users_Users
+      summary: Get a user
+      description: >-
+        Loads one Cognito user with `AdminGetUser` and that user's groups with
+        `AdminListGroupsForUser`.
+      responses:
+        '200':
+          description: The requested user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserResponse'
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: '+84901234567'
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: CONFIRMED
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+    put:
+      operationId: updateUser
+      tags:
+        - INLA-S_Users_Users
+      summary: Update a user
+      description: >
+        Updates `name`, `phone_number`, and `custom:level` with
+        `AdminUpdateUserAttributes`.
+
+        When `role` is present, other role groups are removed and the user is
+        added to the new group.
+
+        Email cannot be changed. Sending `email` returns 400 even if other
+        fields are valid.
+
+        At least one of `name`, `phoneNumber`, `role`, and `level` is required.
+
+        Assigning `EXECUTOR` to a user who is currently enabled is rejected when
+        another enabled `EXECUTOR` exists.
+
+        Assigning `EXECUTOR` to a disabled user does not perform that check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Users_UpdateUserRequest'
+            example:
+              name: Nguyen Van A
+              phoneNumber: '0901234567'
+              role: SALES
+              level: manager
+      responses:
+        '200':
+          description: The user after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '409':
+          description: The user is enabled and another enabled EXECUTOR already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_Error'
+              example:
+                error:
+                  code: CONFLICT
+                  message: Only one active EXECUTOR is allowed.
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /users/{username}/disable:
+    post:
+      operationId: disableUser
+      tags:
+        - INLA-S_Users_Users
+      summary: Disable a user
+      description: >
+        Disables the Cognito user with `AdminDisableUser` and returns the
+        updated user.
+
+        If the user is already disabled, Cognito is not called again and the
+        current user is returned.
+
+        An admin cannot disable the account identified by their own `username`,
+        `cognito:username`, or `email` claim.
+
+        The comparison is case-insensitive. This route has no request body.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Users_Username'
+      responses:
+        '200':
+          description: The user, with enabled set to false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserResponse'
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: '+84901234567'
+                  level: staff
+                  role: SALES
+                  enabled: false
+                  status: CONFIRMED
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          description: >-
+            The caller is not an admin, is disabling their own account, or
+            Cognito rejected the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_Error'
+              examples:
+                notAdmin:
+                  summary: Caller is not in ADMIN
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: Only the ADMIN group can manage users.
+                self:
+                  summary: Caller targeted their own account
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: You cannot disable your own account.
+                cognito:
+                  summary: Cognito rejected the operation
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: Cognito rejected this operation.
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /users/{username}/enable:
+    post:
+      operationId: enableUser
+      tags:
+        - INLA-S_Users_Users
+      summary: Enable a user
+      description: >
+        Enables the Cognito user with `AdminEnableUser` and returns the updated
+        user.
+
+        If the user is already enabled, Cognito is not called again and the
+        current user is returned.
+
+        Enabling a disabled member of `EXECUTOR` is rejected when another
+        enabled `EXECUTOR` exists.
+
+        This route has no request body.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Users_Username'
+      responses:
+        '200':
+          description: The user, with enabled set to true.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_UserResponse'
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: '+84901234567'
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: CONFIRMED
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '409':
+          description: The user is an EXECUTOR and another enabled EXECUTOR already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_Error'
+              example:
+                error:
+                  code: CONFLICT
+                  message: Only one active EXECUTOR is allowed.
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /users/{username}/reset-password:
+    post:
+      operationId: resetUserPassword
+      tags:
+        - INLA-S_Users_Users
+      summary: Reset a user's password
+      description: >
+        Confirms the user exists, then asks Cognito (`AdminResetUserPassword`)
+        to email a password reset.
+
+        This route has no request body. `username` in the response is the path
+        value after decoding and trimming.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Users_Username'
+      responses:
+        '200':
+          description: Cognito accepted the reset and will email the user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Users_PasswordReset'
+              example:
+                username: person@inla.vn
+                message: Password reset email sent.
+        '400':
+          $ref: '#/components/responses/INLA-S_Users_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Users_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Users_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Users_NotFound'
+        '429':
+          $ref: '#/components/responses/INLA-S_Users_TooManyRequests'
+        '500':
+          $ref: '#/components/responses/INLA-S_Users_InternalError'
+        '502':
+          $ref: '#/components/responses/INLA-S_Users_EmailFailed'
+      security:
+        - INLA-S_Users_cognitoAccessToken: []
+  /customers:
+    get:
+      operationId: listCustomers
+      tags:
+        - INLA-S_Customer_Customers
+      summary: List customers
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Customer_Query'
+        - $ref: '#/components/parameters/INLA-S_Customer_CustomerType'
+        - $ref: '#/components/parameters/INLA-S_Customer_Province'
+        - $ref: '#/components/parameters/INLA-S_Customer_Status'
+        - $ref: '#/components/parameters/INLA-S_Customer_Page'
+        - $ref: '#/components/parameters/INLA-S_Customer_PageSize'
+      responses:
+        '200':
+          description: Paginated customer list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerListResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+    post:
+      operationId: createCustomer
+      tags:
+        - INLA-S_Customer_Customers
+      summary: Create customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Customer_CreateCustomerRequest'
+      responses:
+        '201':
+          description: Created customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '409':
+          $ref: '#/components/responses/INLA-S_Customer_Conflict'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+    get:
+      operationId: getCustomer
+      tags:
+        - INLA-S_Customer_Customers
+      summary: Get customer by code
+      responses:
+        '200':
+          description: Customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+    put:
+      operationId: updateCustomer
+      tags:
+        - INLA-S_Customer_Customers
+      summary: Update customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Customer_UpdateCustomerRequest'
+      responses:
+        '200':
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '409':
+          $ref: '#/components/responses/INLA-S_Customer_Conflict'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+    post:
+      operationId: deactivateCustomer
+      tags:
+        - INLA-S_Customer_Customers
+      summary: Deactivate customer (ADMIN)
+      description: >-
+        Sets customer `status` to `inactive`. Only callers in the **ADMIN**
+        Cognito group may use this route.
+      responses:
+        '200':
+          description: Customer marked inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/activate:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+    post:
+      operationId: activateCustomer
+      tags:
+        - INLA-S_Customer_Customers
+      summary: Activate customer (ADMIN)
+      description: >-
+        Sets customer `status` to `active`. Only callers in the **ADMIN**
+        Cognito group may use this route.
+      responses:
+        '200':
+          description: Customer marked active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_CustomerResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/contacts:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+    get:
+      operationId: listContacts
+      tags:
+        - INLA-S_Customer_Contacts
+      summary: List contacts
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Customer_Page'
+        - $ref: '#/components/parameters/INLA-S_Customer_PageSize'
+      responses:
+        '200':
+          description: Contacts for the customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_ContactListResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+    post:
+      operationId: createContact
+      tags:
+        - INLA-S_Customer_Contacts
+      summary: Create contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Customer_CreateContactRequest'
+      responses:
+        '201':
+          description: Created contact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_ContactResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/contacts/{contactId}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+      - $ref: '#/components/parameters/INLA-S_Customer_ContactId'
+    get:
+      operationId: getContact
+      tags:
+        - INLA-S_Customer_Contacts
+      summary: Get contact
+      responses:
+        '200':
+          description: Contact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_ContactResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+    put:
+      operationId: updateContact
+      tags:
+        - INLA-S_Customer_Contacts
+      summary: Update contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Customer_UpdateContactRequest'
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_ContactResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/contacts/{contactId}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+      - $ref: '#/components/parameters/INLA-S_Customer_ContactId'
+    post:
+      operationId: deactivateContact
+      tags:
+        - INLA-S_Customer_Contacts
+      summary: Deactivate contact
+      responses:
+        '200':
+          description: Contact marked inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_ContactResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/sales:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+    get:
+      operationId: listSalesRelations
+      tags:
+        - INLA-S_Customer_Sales
+      summary: List active sales relations
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Customer_Page'
+        - $ref: '#/components/parameters/INLA-S_Customer_PageSize'
+      responses:
+        '200':
+          description: Active sales links
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_SalesListResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+    post:
+      operationId: addSalesRelation
+      tags:
+        - INLA-S_Customer_Sales
+      summary: Assign sales user (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Customer_AddSalesRequest'
+      responses:
+        '201':
+          description: Created or reactivated relation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_SalesRelationResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Customer_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '409':
+          $ref: '#/components/responses/INLA-S_Customer_Conflict'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/sales/{salesUsername}/remove:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+      - $ref: '#/components/parameters/INLA-S_Customer_SalesUsername'
+    post:
+      operationId: removeSalesRelation
+      tags:
+        - INLA-S_Customer_Sales
+      summary: End sales relation (ADMIN)
+      responses:
+        '200':
+          description: Relation ended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_SalesRelationResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /customers/{code}/history:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Customer_CustomerCode'
+      - $ref: '#/components/parameters/INLA-S_Customer_Page'
+      - $ref: '#/components/parameters/INLA-S_Customer_PageSize'
+    get:
+      operationId: listCustomerHistory
+      tags:
+        - INLA-S_Customer_History
+      summary: Paginated audit history
+      responses:
+        '200':
+          description: Audit events for the customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Customer_HistoryListResponse'
+        '401':
+          $ref: '#/components/responses/INLA-S_Customer_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Customer_Forbidden'
+        '404':
+          $ref: '#/components/responses/INLA-S_Customer_NotFound'
+        '500':
+          $ref: '#/components/responses/INLA-S_Customer_InternalError'
+      security:
+        - INLA-S_Customer_cognitoAccessToken: []
+  /tasks:
+    get:
+      operationId: listTaskInbox
+      tags:
+        - INLA-S_Quotation_Tasks
+      summary: Task inbox (open tasks on active workflow stages)
+      description: >
+        Replaces client N+1 (`GET /quotations` + `GET /quotations/{code}` per
+        row).
+
+        Returns open tasks (`pending` / `in_progress`) on the **current cycle**
+        for quotations in active workflow stages.
+
+        Task types are scoped by JWT role (ADMIN = all types; SALES = owner
+        quotations, all task types like FE fallback).
+
+        `slaAlertState` is computed on read (50% elapsed → `warning`, past
+        deadline → `overdue`).
+
+        Sort: overdue → warning → normal, then `slaDeadlineAt` ascending.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_SlaAlertState'
+        - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+        - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_TaskInboxResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations:
+    get:
+      operationId: listQuotations
+      tags:
+        - INLA-S_Quotation_Quotations
+      summary: List quotations
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_Query'
+        - $ref: '#/components/parameters/INLA-S_Quotation_WorkflowStatus'
+        - $ref: '#/components/parameters/INLA-S_Quotation_BusinessOutcome'
+        - $ref: '#/components/parameters/INLA-S_Quotation_CycleType'
+        - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+        - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationListResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+    post:
+      operationId: createQuotation
+      tags:
+        - INLA-S_Quotation_Quotations
+      summary: Create draft quotation (SALES)
+      description: Creates quotation + cycle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_CreateQuotationRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    get:
+      operationId: getQuotation
+      tags:
+        - INLA-S_Quotation_Quotations
+      summary: Get quotation aggregate
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+        '404':
+          $ref: '#/components/responses/INLA-S_Quotation_NotFound'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+    put:
+      operationId: updateQuotationDraft
+      tags:
+        - INLA-S_Quotation_Quotations
+      summary: Update draft (SALES owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: >-
+                #/components/schemas/INLA-S_Quotation_UpdateQuotationDraftRequest
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+        '409':
+          $ref: '#/components/responses/INLA-S_Quotation_Conflict'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: cancelQuotationDraft
+      tags:
+        - INLA-S_Quotation_Quotations
+      summary: Cancel draft (SALES owner)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/submit:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: submitQuotation
+      tags:
+        - INLA-S_Quotation_Workflow
+      summary: Submit current draft cycle (SALES owner)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/resubmit/prepare:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: prepareResubmit
+      tags:
+        - INLA-S_Quotation_Workflow
+      summary: Open re-submit draft cycle (SALES owner)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/resubmit/submit:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: submitResubmit
+      tags:
+        - INLA-S_Quotation_Workflow
+      summary: Submit re-submit cycle (SALES owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resubmitReason
+              properties:
+                resubmitReason:
+                  type: string
+                version:
+                  type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/clone:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: cloneQuotation
+      tags:
+        - INLA-S_Quotation_Workflow
+      summary: Clone to new draft quotation (SALES owner)
+      description: Copies sales carton fields only. Attachment copy is planned for PR2.
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/business-outcome:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    patch:
+      operationId: updateBusinessOutcome
+      tags:
+        - INLA-S_Quotation_Workflow
+      summary: Update business outcome (SALES owner, approved only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - businessOutcome
+              properties:
+                businessOutcome:
+                  $ref: '#/components/schemas/INLA-S_Quotation_BusinessOutcome'
+                version:
+                  type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/tasks/{taskType}/start:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - $ref: '#/components/parameters/INLA-S_Quotation_TaskType'
+    post:
+      operationId: startTask
+      tags:
+        - INLA-S_Quotation_Tasks
+      summary: Start workflow task (matching role)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/tasks/{taskType}/complete:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - $ref: '#/components/parameters/INLA-S_Quotation_TaskType'
+    post:
+      operationId: completeTask
+      tags:
+        - INLA-S_Quotation_Tasks
+      summary: Complete workflow task (matching role)
+      description: >
+        **Do not** complete `director_review` here — use `POST
+        /quotations/{code}/director/decision` (409 otherwise).
+
+
+        **QA (`qa_review`):** each current-cycle `quotation_line_items` row must
+        have a matching `qaData.qaLineData[]`
+
+        entry (`lineNumber` = `line_number`). Per line: non-empty **QA-09…12**
+        (`burstStandard`…`kcgStandard`),
+
+        **QA-13** (`kcgQaSxProposal1`), and **at least one** of **QA-14 /
+        QA-15** (`kcgQaSxProposal2` or `kcgQaSxProposal3`).
+
+
+        **R&D (`rnd_review`):** each line must have a matching
+        `rndData.rndLineData[]` entry. Per line:
+
+        `printingPlateCost` and `dieCost` ≥ 0 (required for complete),
+        non-whitespace `productionPlan` (RND-11).
+
+
+        Consolidation: **unitPrice on every line item** (LIN-07). Accounting:
+        `finalQuotationValue`.
+
+        Attachment minimums (QA/R&D/consolidation) apply when
+        `ATTACHMENTS_ENABLED=true`.
+
+        QA+RND → `executor_consolidation` only when both tasks complete (one
+        workflow transition event).
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/qa:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    put:
+      operationId: updateQaData
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: Save QA payload (QA)
+      description: >
+        **Full replace** of `qaLineData` for the current cycle. Body must
+        include `qaLineData` (array).
+
+        Length and `lineNumber` set must match `lineItems` for the cycle (sorted
+        `line_number`); use `[]` only when the cycle has no lines.
+
+        Persisted on `quotation_line_qa` (one row per line), joined by
+        `lineNumber`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_QaDataPut'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/rnd:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    put:
+      operationId: updateRndData
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: Save R&D payload (R&D)
+      description: >
+        **Full replace** of `rndLineData` for the current cycle. Body must
+        include `rndLineData` (array).
+
+        Same line-count / `lineNumber` rules as QA. Persisted on
+        `quotation_line_rnd`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_RndDataPut'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/development-minutes:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    get:
+      operationId: getDevelopmentMinutes
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: BM03 development minutes for current cycle (quotation read scope)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutes'
+                nullable: true
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+    put:
+      operationId: updateDevelopmentMinutes
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: Save BM03 development minutes (R&D only; ADMIN read-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutesInput'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/executor/intake:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    put:
+      operationId: updateExecutorIntake
+      tags:
+        - INLA-S_Quotation_RoleData
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/executor/consolidation:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    put:
+      operationId: updateExecutorConsolidation
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: >-
+        EXECUTOR consolidation header (EXC-05/06) and per-line price/remark
+        (LIN-07/09)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: >-
+                #/components/schemas/INLA-S_Quotation_ExecutorConsolidationPayload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/accounting:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    put:
+      operationId: updateAccountingData
+      tags:
+        - INLA-S_Quotation_RoleData
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/director/decision:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: directorDecision
+      tags:
+        - INLA-S_Quotation_RoleData
+      summary: Per-line approve or reject (DIRECTOR only)
+      description: >
+        **DIRECTOR** only, while `workflow_status = director_review`. One
+        decision per current-cycle line.
+
+        Any line `rejected` → quotation `rejected`; all lines `approved` →
+        quotation `approved`.
+
+        `rejectionReason` required on each rejected line.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_DirectorDecisionRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationDetailResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    get:
+      operationId: listAttachments
+      tags:
+        - INLA-S_Quotation_Attachments
+      parameters:
+        - name: cycleId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: section
+          in: query
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_AttachmentSection'
+        - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+        - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - attachments
+                  - page
+                  - pageSize
+                  - total
+                properties:
+                  attachments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/INLA-S_Quotation_Attachment'
+                  page:
+                    type: integer
+                    default: 1
+                  pageSize:
+                    type: integer
+                    default: 20
+                  total:
+                    type: integer
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/attachments/presign:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: presignAttachment
+      tags:
+        - INLA-S_Quotation_Attachments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/INLA-S_Quotation_PresignAttachmentRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploadUrl:
+                    type: string
+                  storageKey:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/attachments/confirm:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    post:
+      operationId: confirmAttachment
+      tags:
+        - INLA-S_Quotation_Attachments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: >-
+                    #/components/schemas/INLA-S_Quotation_PresignAttachmentRequest
+                - type: object
+                  required:
+                    - storageKey
+                  properties:
+                    storageKey:
+                      type: string
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachment:
+                    $ref: '#/components/schemas/INLA-S_Quotation_Attachment'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/attachments/{attachmentId}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - name: attachmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: deleteAttachment
+      tags:
+        - INLA-S_Quotation_Attachments
+      summary: Soft-delete own attachment
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/history:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+      - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+    get:
+      operationId: listQuotationHistory
+      tags:
+        - INLA-S_Quotation_History
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_HistoryResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/revisions:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+      - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+    get:
+      operationId: listRevisions
+      tags:
+        - INLA-S_Quotation_History
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - revisions
+                  - page
+                  - pageSize
+                  - total
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/INLA-S_Quotation_Revision'
+                  page:
+                    type: integer
+                    default: 1
+                  pageSize:
+                    type: integer
+                    default: 20
+                  total:
+                    type: integer
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/revisions/{revisionCode}:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+      - name: revisionCode
+        in: path
+        required: true
+        schema:
+          type: string
+          example: REV-01
+    get:
+      operationId: getRevision
+      tags:
+        - INLA-S_Quotation_History
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revision:
+                    $ref: '#/components/schemas/INLA-S_Quotation_Revision'
+                  snapshot:
+                    type: object
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/similar-by-product:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    get:
+      operationId: similarByProduct
+      tags:
+        - INLA-S_Quotation_History
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationListResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /quotations/{code}/similar-by-customer:
+    parameters:
+      - $ref: '#/components/parameters/INLA-S_Quotation_QuotationCode'
+    get:
+      operationId: similarByCustomer
+      tags:
+        - INLA-S_Quotation_History
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationListResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /customers/{customerCode}/quotations:
+    parameters:
+      - name: customerCode
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^KH-\d{6,}$
+      - $ref: '#/components/parameters/INLA-S_Quotation_Page'
+      - $ref: '#/components/parameters/INLA-S_Quotation_PageSize'
+    get:
+      operationId: listCustomerQuotations
+      tags:
+        - INLA-S_Quotation_CustomerTab
+      summary: Quotations for customer (SALES = own only)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_QuotationListResponse'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /reports/operations:
+    get:
+      operationId: getOperationsReport
+      tags:
+        - INLA-S_Quotation_Reports
+      summary: RPT-01 — workflow status counts in period
+      description: >
+        Read-only operations report. Counts quotations by current
+        `workflowStatus` where
+
+        **`quotations.created_at`** falls in `[fromDate, toDate]` (inclusive
+        calendar days, UTC).
+
+        Default range when omitted: last 30 days (OQ-RPT-02).
+
+
+        **Scope:** SALES sees own quotations (`salesOwnerUsername`); other
+        quotation roles see all.
+
+        Optional `department` limits to quotations whose **current cycle** has a
+        task of that `taskType`.
+
+
+        Period anchor and win-rate denominators may change when OQ-RPT-05/06 are
+        finalized.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportFromDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportToDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportDepartment'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_OperationsReportResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /reports/business:
+    get:
+      operationId: getBusinessReport
+      tags:
+        - INLA-S_Quotation_Reports
+      summary: RPT-02 — sent, won, lost, win rate, total won value
+      description: >
+        Business outcome KPIs for quotations created in the reporting period
+        (`quotations.created_at`).
+
+        **`sent`** = `sent_to_customer` + `won` + `lost`; **`winRate`** = `won /
+        sent` when `sent > 0` (OQ-RPT-05 pending).
+
+        **`totalWonValue`** sums `finalQuotationValue` from the latest
+        **approved** workflow cycle per won quotation (OQ-RPT-06 assumption).
+
+        SALES scope: own quotations only.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportFromDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportToDate'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_BusinessReportResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /reports/departments:
+    get:
+      operationId: getDepartmentsReport
+      tags:
+        - INLA-S_Quotation_Reports
+      summary: RPT-03 — average task duration vs SLA by department
+      description: >
+        Completed tasks (`taskStatus = completed`) with `completedAt` in the
+        reporting window,
+
+        joined to quotations in scope. **`avgDurationHours`** uses `completedAt
+        - startedAt`;
+
+        **`avgSlaHours`** uses snapshotted `slaDurationHours`.
+
+
+        **SALES → 403** (matches frontend `canAccessReportTab`). Optional
+        `department` filters to one `taskType`.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportFromDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportToDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportDepartment'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: >-
+                  #/components/schemas/INLA-S_Quotation_DepartmentsReportResponse
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+  /reports/resubmit:
+    get:
+      operationId: getResubmitReport
+      tags:
+        - INLA-S_Quotation_Reports
+      summary: RPT-04 — re-submit rate, average cycles, monthly series
+      description: >
+        Quotations created in period with at least one submitted cycle.
+
+        **`avgResubmitRate`** = share of those quotations that have a
+        `re_submit` cycle.
+
+        **`avgCyclesPerQuotation`** = mean submitted cycle count per quotation.
+
+        **`monthlySeries`** groups by month of `workflow_cycles.submitted_at` in
+        the date window.
+
+        SALES scope: own quotations only.
+      parameters:
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportFromDate'
+        - $ref: '#/components/parameters/INLA-S_Quotation_ReportToDate'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/INLA-S_Quotation_ResubmitReportResponse'
+        '400':
+          $ref: '#/components/responses/INLA-S_Quotation_BadRequest'
+        '401':
+          $ref: '#/components/responses/INLA-S_Quotation_Unauthorized'
+        '403':
+          $ref: '#/components/responses/INLA-S_Quotation_Forbidden'
+        '500':
+          $ref: '#/components/responses/INLA-S_Quotation_InternalError'
+      security:
+        - INLA-S_Quotation_cognitoAccessToken: []
+components:
+  securitySchemes:
+    INLA-S_Users_cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Cognito access token sent in the `Authorization` header.
+
+        API Gateway is the JWT authorizer. The Lambda reads
+        `requestContext.authorizer.jwt.claims`
+
+        and requires the `ADMIN` group.
+    INLA-S_Customer_cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito access token (API Gateway JWT authorizer).
+    INLA-S_Quotation_cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    INLA-S_Users_Username:
+      name: username
+      in: path
+      required: true
+      description: |
+        Cognito username. Users created by this API use the email address.
+        The value is URL-decoded and trimmed. An empty value is rejected.
+      schema:
+        type: string
+        minLength: 1
+      example: person@inla.vn
+    INLA-S_Users_Query:
+      name: q
+      in: query
+      required: false
+      description: >
+        Case-insensitive substring matched against `name`, `email`,
+        `phoneNumber`, and `username`.
+
+        Blank and whitespace-only values do not filter the list.
+      schema:
+        type: string
+      example: nguyen
+    INLA-S_Users_Role:
+      name: role
+      in: query
+      required: false
+      description: >
+        Exact match on the user's resolved role.
+
+        A value that is not one of the known roles matches nobody and yields an
+        empty list.
+      schema:
+        $ref: '#/components/schemas/INLA-S_Users_RoleName'
+    INLA-S_Users_Enabled:
+      name: enabled
+      in: query
+      required: false
+      description: |
+        `true` returns only enabled users. `false` returns only disabled users.
+        Any other value is ignored and does not filter the list.
+      schema:
+        type: string
+        enum:
+          - 'true'
+          - 'false'
+    INLA-S_Users_Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    INLA-S_Users_PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    INLA-S_Customer_CustomerCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+        example: KH-000128
+    INLA-S_Customer_ContactId:
+      name: contactId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    INLA-S_Customer_SalesUsername:
+      name: salesUsername
+      in: path
+      required: true
+      schema:
+        type: string
+        description: Cognito username (usually email), lowercase.
+    INLA-S_Customer_Query:
+      name: q
+      in: query
+      schema:
+        type: string
+      description: Case-insensitive match on name, code, taxId, or email.
+    INLA-S_Customer_CustomerType:
+      name: customerType
+      in: query
+      schema:
+        $ref: '#/components/schemas/INLA-S_Customer_CustomerType'
+    INLA-S_Customer_Province:
+      name: province
+      in: query
+      schema:
+        type: string
+    INLA-S_Customer_Status:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/INLA-S_Customer_EntityStatus'
+    INLA-S_Customer_Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    INLA-S_Customer_PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    INLA-S_Quotation_QuotationCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^BG-\d{6,}$
+    INLA-S_Quotation_TaskType:
+      name: taskType
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - executor_intake
+          - qa_review
+          - rnd_review
+          - executor_consolidation
+          - accounting_review
+          - director_review
+    INLA-S_Quotation_Query:
+      name: q
+      in: query
+      schema:
+        type: string
+    INLA-S_Quotation_WorkflowStatus:
+      name: workflowStatus
+      in: query
+      schema:
+        $ref: '#/components/schemas/INLA-S_Quotation_WorkflowStatus'
+    INLA-S_Quotation_BusinessOutcome:
+      name: businessOutcome
+      in: query
+      schema:
+        $ref: '#/components/schemas/INLA-S_Quotation_BusinessOutcome'
+    INLA-S_Quotation_CycleType:
+      name: cycleType
+      in: query
+      schema:
+        type: string
+        enum:
+          - new
+          - re_submit
+    INLA-S_Quotation_Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    INLA-S_Quotation_PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    INLA-S_Quotation_SlaAlertState:
+      name: slaAlertState
+      in: query
+      schema:
+        $ref: '#/components/schemas/INLA-S_Quotation_SlaAlertState'
+    INLA-S_Quotation_ReportFromDate:
+      name: fromDate
+      in: query
+      description: ISO date (YYYY-MM-DD). Default = today − 30 days (OQ-RPT-02).
+      schema:
+        type: string
+        format: date
+    INLA-S_Quotation_ReportToDate:
+      name: toDate
+      in: query
+      description: ISO date (YYYY-MM-DD). Default = today (UTC).
+      schema:
+        type: string
+        format: date
+    INLA-S_Quotation_ReportDepartment:
+      name: department
+      in: query
+      description: >-
+        Filter by workflow task type (department). Used on operations and
+        departments reports.
+      schema:
+        type: string
+        enum:
+          - executor_intake
+          - qa_review
+          - rnd_review
+          - executor_consolidation
+          - accounting_review
+          - director_review
+  schemas:
+    INLA-S_Users_RoleName:
+      type: string
+      description: Cognito group used as the user's single role.
+      enum:
+        - ADMIN
+        - DIRECTOR
+        - EXECUTOR
+        - SALES
+        - QA
+        - R&D
+        - ACCOUNTING
+    INLA-S_Users_Level:
+      type: string
+      description: Stored in the Cognito attribute `custom:level`.
+      enum:
+        - manager
+        - staff
+    INLA-S_Users_Role:
+      type: object
+      required:
+        - name
+        - description
+      properties:
+        name:
+          $ref: '#/components/schemas/INLA-S_Users_RoleName'
+        description:
+          type: string
+          description: Cognito group description. Empty when the group has none.
+        precedence:
+          type: integer
+          description: Cognito group precedence. Omitted when the group has no precedence.
+    INLA-S_Users_RoleList:
+      type: object
+      required:
+        - roles
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Users_Role'
+    INLA-S_Users_User:
+      type: object
+      required:
+        - username
+        - email
+        - name
+        - phoneNumber
+        - level
+        - role
+        - enabled
+        - status
+      properties:
+        username:
+          type: string
+          description: Cognito username. For users created here, this is the email.
+        email:
+          type: string
+          description: >-
+            Cognito `email` attribute, or the username when that attribute is
+            absent.
+        name:
+          type: string
+          description: Cognito `name` attribute. Empty when the attribute is absent.
+        phoneNumber:
+          type: string
+          description: >-
+            Cognito `phone_number` attribute. E.164 when written by this API.
+            Empty when the attribute is absent.
+          example: '+84901234567'
+        level:
+          type: string
+          description: >-
+            Cognito `custom:level`. `manager` or `staff` when written by this
+            API. Empty when the attribute is absent.
+          example: staff
+        role:
+          type: string
+          nullable: true
+          enum:
+            - ADMIN
+            - DIRECTOR
+            - EXECUTOR
+            - SALES
+            - QA
+            - R&D
+            - ACCOUNTING
+          description: |
+            The first of the user's groups that is a known role, in role order.
+            Null when the user is in none of those groups.
+        enabled:
+          type: boolean
+          description: Cognito enabled flag.
+        status:
+          type: string
+          description: >
+            Cognito `UserStatus`. Common values are `FORCE_CHANGE_PASSWORD`,
+            `CONFIRMED`, and `RESET_REQUIRED`.
+          example: CONFIRMED
+    INLA-S_Users_UserResponse:
+      type: object
+      required:
+        - user
+      properties:
+        user:
+          $ref: '#/components/schemas/INLA-S_Users_User'
+    INLA-S_Users_UserList:
+      type: object
+      required:
+        - users
+        - page
+        - pageSize
+        - total
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Users_User'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Users_CreateUserRequest:
+      type: object
+      required:
+        - email
+        - name
+        - phoneNumber
+        - role
+        - level
+      properties:
+        email:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: >
+            Trimmed and lowercased. Must match one local part, `@`, and a domain
+            containing a dot, with no spaces.
+
+            This value becomes the Cognito username. `email_verified` is set to
+            true.
+          example: person@inla.vn
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: |
+            Trimmed. Internal whitespace is collapsed to a single space.
+            ASCII control characters (U+0000 through U+001F) are rejected.
+          example: Nguyen Van A
+        phoneNumber:
+          type: string
+          minLength: 1
+          description: >
+            Vietnam phone number. Spaces, parentheses, dots, and dashes are
+            removed before validation.
+
+            A leading `0` is replaced with country code `84`. A leading `+` is
+            accepted.
+
+            The remaining digits must be `84` followed by 8 to 11 digits.
+
+            Cognito stores the E.164 form, such as `+84901234567` for
+            `0901234567`.
+          example: '0901234567'
+        role:
+          $ref: '#/components/schemas/INLA-S_Users_RoleName'
+        level:
+          $ref: '#/components/schemas/INLA-S_Users_Level'
+    INLA-S_Users_UpdateUserRequest:
+      type: object
+      description: >
+        At least one of `name`, `phoneNumber`, `role`, and `level` is required.
+
+        Each supplied field uses the same validation as create.
+
+        `email` is rejected with `Invalid email.` Properties other than these
+        five are ignored.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Same validation as create.
+          example: Nguyen Van A
+        phoneNumber:
+          type: string
+          minLength: 1
+          description: Same validation and E.164 normalization as create.
+          example: '0901234567'
+        role:
+          $ref: '#/components/schemas/INLA-S_Users_RoleName'
+        level:
+          $ref: '#/components/schemas/INLA-S_Users_Level'
+    INLA-S_Users_PasswordReset:
+      type: object
+      required:
+        - username
+        - message
+      properties:
+        username:
+          type: string
+          description: Path username after URL decoding and trimming.
+        message:
+          type: string
+          enum:
+            - Password reset email sent.
+    INLA-S_Users_Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - EMAIL_FAILED
+                - TOO_MANY_REQUESTS
+                - INTERNAL_ERROR
+            message:
+              type: string
+    INLA-S_Users_GatewayMessage:
+      type: object
+      required:
+        - message
+      description: >-
+        Body returned by API Gateway when the JWT authorizer rejects the request
+        before the Lambda runs.
+      properties:
+        message:
+          type: string
+          example: Unauthorized
+    INLA-S_Customer_CustomerType:
+      type: string
+      enum:
+        - business
+        - individual
+    INLA-S_Customer_EntityStatus:
+      type: string
+      enum:
+        - active
+        - inactive
+    INLA-S_Customer_RelationStatus:
+      type: string
+      enum:
+        - active
+        - inactive
+    INLA-S_Customer_Customer:
+      type: object
+      required:
+        - id
+        - code
+        - customerType
+        - name
+        - taxId
+        - phone
+        - email
+        - addressLine
+        - province
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        customerType:
+          $ref: '#/components/schemas/INLA-S_Customer_CustomerType'
+        name:
+          type: string
+        shortName:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/INLA-S_Customer_EntityStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+        updatedBy:
+          type: string
+          nullable: true
+    INLA-S_Customer_Contact:
+      type: object
+      required:
+        - id
+        - customerId
+        - fullName
+        - email
+        - phone
+        - isPrimary
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        isPrimary:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/INLA-S_Customer_EntityStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    INLA-S_Customer_SalesRelation:
+      type: object
+      required:
+        - id
+        - customerId
+        - salesUsername
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        salesUsername:
+          type: string
+        status:
+          $ref: '#/components/schemas/INLA-S_Customer_RelationStatus'
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        endedBy:
+          type: string
+          nullable: true
+    INLA-S_Customer_AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        occurredAt:
+          type: string
+          format: date-time
+        actorUsername:
+          type: string
+          nullable: true
+        actorRole:
+          type: string
+          nullable: true
+        requestId:
+          type: string
+          nullable: true
+        schemaName:
+          type: string
+        tableName:
+          type: string
+        operation:
+          type: string
+        entityId:
+          type: string
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+        action:
+          type: string
+        oldData:
+          type: object
+          nullable: true
+        newData:
+          type: object
+          nullable: true
+    INLA-S_Customer_CreateCustomerRequest:
+      type: object
+      required:
+        - customerType
+        - name
+        - taxId
+        - phone
+        - email
+        - addressLine
+        - province
+      properties:
+        customerType:
+          $ref: '#/components/schemas/INLA-S_Customer_CustomerType'
+        name:
+          type: string
+        shortName:
+          type: string
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+        notes:
+          type: string
+    INLA-S_Customer_UpdateCustomerRequest:
+      type: object
+      description: At least one field required; same validation as create per field.
+      properties:
+        customerType:
+          $ref: '#/components/schemas/INLA-S_Customer_CustomerType'
+        name:
+          type: string
+        shortName:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+    INLA-S_Customer_CreateContactRequest:
+      type: object
+      required:
+        - fullName
+        - email
+        - phone
+      properties:
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+        department:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+        isPrimary:
+          type: boolean
+          default: false
+    INLA-S_Customer_UpdateContactRequest:
+      type: object
+      properties:
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        isPrimary:
+          type: boolean
+    INLA-S_Customer_AddSalesRequest:
+      type: object
+      required:
+        - salesUsername
+      properties:
+        salesUsername:
+          type: string
+          description: Cognito username (email), stored lowercase.
+    INLA-S_Customer_CustomerResponse:
+      type: object
+      required:
+        - customer
+      properties:
+        customer:
+          $ref: '#/components/schemas/INLA-S_Customer_Customer'
+    INLA-S_Customer_CustomerListResponse:
+      type: object
+      required:
+        - customers
+        - page
+        - pageSize
+        - total
+      properties:
+        customers:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Customer_Customer'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Customer_ContactResponse:
+      type: object
+      required:
+        - contact
+      properties:
+        contact:
+          $ref: '#/components/schemas/INLA-S_Customer_Contact'
+    INLA-S_Customer_ContactListResponse:
+      type: object
+      required:
+        - contacts
+        - page
+        - pageSize
+        - total
+      properties:
+        contacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Customer_Contact'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Customer_SalesRelationResponse:
+      type: object
+      required:
+        - relation
+      properties:
+        relation:
+          $ref: '#/components/schemas/INLA-S_Customer_SalesRelation'
+    INLA-S_Customer_SalesListResponse:
+      type: object
+      required:
+        - sales
+        - page
+        - pageSize
+        - total
+      properties:
+        sales:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Customer_SalesRelation'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Customer_HistoryListResponse:
+      type: object
+      required:
+        - events
+        - page
+        - pageSize
+        - total
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Customer_AuditEvent'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Customer_Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+    INLA-S_Quotation_ReportPeriodMeta:
+      type: object
+      required:
+        - fromDate
+        - toDate
+        - periodAnchor
+      properties:
+        fromDate:
+          type: string
+          format: date
+        toDate:
+          type: string
+          format: date
+        periodAnchor:
+          type: string
+          enum:
+            - quotationCreatedAt
+          description: Interim anchor; may change when OQ-RPT-05/06 close.
+    INLA-S_Quotation_OperationsReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_ReportPeriodMeta'
+        - type: object
+          required:
+            - total
+            - byWorkflowStatus
+          properties:
+            total:
+              type: integer
+            byWorkflowStatus:
+              type: array
+              items:
+                type: object
+                required:
+                  - workflowStatus
+                  - count
+                properties:
+                  workflowStatus:
+                    $ref: '#/components/schemas/INLA-S_Quotation_WorkflowStatus'
+                  count:
+                    type: integer
+    INLA-S_Quotation_BusinessReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_ReportPeriodMeta'
+        - type: object
+          required:
+            - sent
+            - won
+            - lost
+            - totalWonValue
+          properties:
+            sent:
+              type: integer
+              description: sent_to_customer + won + lost
+            won:
+              type: integer
+            lost:
+              type: integer
+            winRate:
+              type: number
+              nullable: true
+              description: won / sent when sent > 0 (OQ-RPT-05 pending)
+            totalWonValue:
+              type: number
+              description: VNĐ; latest approved cycle per won quotation (OQ-RPT-06)
+    INLA-S_Quotation_DepartmentReportRow:
+      type: object
+      required:
+        - taskType
+        - departmentLabel
+        - completedTasks
+        - overSlaCount
+      properties:
+        taskType:
+          type: string
+        departmentLabel:
+          type: string
+        avgDurationHours:
+          type: number
+          nullable: true
+        avgSlaHours:
+          type: number
+          nullable: true
+        completedTasks:
+          type: integer
+        overSlaCount:
+          type: integer
+    INLA-S_Quotation_DepartmentsReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_ReportPeriodMeta'
+        - type: object
+          required:
+            - departments
+          properties:
+            departments:
+              type: array
+              items:
+                $ref: '#/components/schemas/INLA-S_Quotation_DepartmentReportRow'
+    INLA-S_Quotation_ResubmitMonthlyPoint:
+      type: object
+      required:
+        - month
+        - submittedQuotations
+        - quotationsWithResubmit
+      properties:
+        month:
+          type: string
+          description: YYYY-MM
+        submittedQuotations:
+          type: integer
+        quotationsWithResubmit:
+          type: integer
+        resubmitRate:
+          type: number
+          nullable: true
+    INLA-S_Quotation_ResubmitReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_ReportPeriodMeta'
+        - type: object
+          required:
+            - monthlySeries
+          properties:
+            avgResubmitRate:
+              type: number
+              nullable: true
+            avgCyclesPerQuotation:
+              type: number
+              nullable: true
+            submittedQuotations:
+              type: integer
+            quotationsWithResubmit:
+              type: integer
+            monthlySeries:
+              type: array
+              items:
+                $ref: '#/components/schemas/INLA-S_Quotation_ResubmitMonthlyPoint'
+    INLA-S_Quotation_SlaAlertState:
+      type: string
+      enum:
+        - normal
+        - warning
+        - overdue
+    INLA-S_Quotation_WorkflowStatus:
+      type: string
+      enum:
+        - draft
+        - cancelled
+        - executor_intake
+        - qa_rnd_review
+        - executor_consolidation
+        - accounting_review
+        - director_review
+        - approved
+        - rejected
+    INLA-S_Quotation_BusinessOutcome:
+      type: string
+      enum:
+        - not_updated
+        - sent_to_customer
+        - won
+        - lost
+    INLA-S_Quotation_Quotation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        salesOwnerUsername:
+          type: string
+        customerId:
+          type: string
+          format: uuid
+        customerCode:
+          type: string
+        customerName:
+          type: string
+        contactId:
+          type: string
+          format: uuid
+          nullable: true
+        workflowStatus:
+          $ref: '#/components/schemas/INLA-S_Quotation_WorkflowStatus'
+        businessOutcome:
+          $ref: '#/components/schemas/INLA-S_Quotation_BusinessOutcome'
+        currentCycleId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    INLA-S_Quotation_SalesData:
+      type: object
+      description: >
+        Cycle-level Sales header (delivery location, notes, legacy optional
+        carton fields).
+
+        Carton spec for submit is validated on **lineItems** (PRICE-FORMAT /
+        LIN-02…08), not single-row SAL dimensions.
+      properties:
+        boxType:
+          type: string
+          deprecated: true
+        lengthMm:
+          type: number
+          deprecated: true
+        widthMm:
+          type: number
+          deprecated: true
+        heightMm:
+          type: number
+          deprecated: true
+        dimensionType:
+          type: string
+          enum:
+            - inner
+            - outer
+          deprecated: true
+        material:
+          type: string
+          deprecated: true
+        layerCount:
+          type: integer
+          deprecated: true
+        fluteType:
+          type: string
+          deprecated: true
+        productLoadKg:
+          type: number
+          deprecated: true
+        printingDescription:
+          type: string
+          deprecated: true
+        printColorCount:
+          type: integer
+          deprecated: true
+        printSideCount:
+          type: integer
+          deprecated: true
+        quantityPieces:
+          type: integer
+          deprecated: true
+        deliveryLocation:
+          type: string
+        desiredDeliveryTime:
+          type: string
+        salesNote:
+          type: string
+        additionalRequirements:
+          type: string
+    INLA-S_Quotation_LineItem:
+      type: object
+      required:
+        - id
+        - lineNumber
+        - itemName
+        - fluteType
+        - lengthMm
+        - widthMm
+        - heightMm
+        - quantity
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineNumber:
+          type: integer
+          minimum: 1
+        itemCode:
+          type: string
+          nullable: true
+          description: LIN-01 (optional on submit)
+        itemName:
+          type: string
+        fluteType:
+          type: string
+        lengthMm:
+          type: number
+        widthMm:
+          type: number
+        heightMm:
+          type: number
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          nullable: true
+          description: LIN-07 / EXC-01 — EXECUTOR; required on complete consolidation
+        lineRemark:
+          type: string
+          nullable: true
+    INLA-S_Quotation_LineItemSalesInput:
+      type: object
+      required:
+        - itemName
+        - fluteType
+        - lengthMm
+        - widthMm
+        - heightMm
+        - quantity
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        itemCode:
+          type: string
+        itemName:
+          type: string
+        fluteType:
+          type: string
+        lengthMm:
+          type: number
+        widthMm:
+          type: number
+        heightMm:
+          type: number
+        quantity:
+          type: integer
+          minimum: 1
+        lineRemark:
+          type: string
+    INLA-S_Quotation_LineItemConsolidationPatch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineNumber:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          minimum: 0
+        lineRemark:
+          type: string
+      description: Identify row by `id` or `lineNumber`.
+    INLA-S_Quotation_ExecutorConsolidationData:
+      type: object
+      properties:
+        deliveryTerms:
+          type: string
+          description: EXC-05
+        consolidationNote:
+          type: string
+          description: EXC-06
+    INLA-S_Quotation_ExecutorConsolidationPayload:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_ExecutorConsolidationData'
+        - type: object
+          properties:
+            lineItems:
+              type: array
+              items:
+                $ref: >-
+                  #/components/schemas/INLA-S_Quotation_LineItemConsolidationPatch
+    INLA-S_Quotation_CreateQuotationRequest:
+      allOf:
+        - type: object
+          required:
+            - customerId
+          properties:
+            customerId:
+              type: string
+              format: uuid
+            contactId:
+              type: string
+              format: uuid
+              nullable: true
+        - $ref: '#/components/schemas/INLA-S_Quotation_SalesData'
+        - type: object
+          properties:
+            lineItems:
+              type: array
+              description: Optional initial line items for the first cycle.
+              items:
+                $ref: '#/components/schemas/INLA-S_Quotation_LineItemSalesInput'
+    INLA-S_Quotation_UpdateQuotationDraftRequest:
+      allOf:
+        - type: object
+          properties:
+            customerId:
+              type: string
+              format: uuid
+            contactId:
+              type: string
+              format: uuid
+              nullable: true
+            version:
+              type: integer
+            lineItems:
+              type: array
+              description: >
+                **Full replace** of line items on the current cycle when present
+                (Sales owner, unsubmitted cycle).
+
+                Omitted = unchanged. `[]` removes all lines. `unitPrice` is
+                ignored on this route.
+              items:
+                $ref: '#/components/schemas/INLA-S_Quotation_LineItemSalesInput'
+        - $ref: '#/components/schemas/INLA-S_Quotation_SalesData'
+    INLA-S_Quotation_QuotationDetailResponse:
+      type: object
+      properties:
+        quotation:
+          $ref: '#/components/schemas/INLA-S_Quotation_Quotation'
+        currentCycle:
+          type: object
+        salesData:
+          $ref: '#/components/schemas/INLA-S_Quotation_SalesData'
+        lineItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_LineItem'
+        qaData:
+          $ref: '#/components/schemas/INLA-S_Quotation_QaData'
+        rndData:
+          $ref: '#/components/schemas/INLA-S_Quotation_RndData'
+        developmentMinutes:
+          allOf:
+            - $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutes'
+          nullable: true
+        executorIntake:
+          type: object
+        executorConsolidation:
+          $ref: '#/components/schemas/INLA-S_Quotation_ExecutorConsolidationData'
+        accountingData:
+          type: object
+        directorData:
+          $ref: '#/components/schemas/INLA-S_Quotation_DirectorData'
+        customerSnapshot:
+          type: object
+        tasks:
+          type: array
+          items:
+            type: object
+    INLA-S_Quotation_QuotationListResponse:
+      type: object
+      properties:
+        quotations:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_Quotation'
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Quotation_QuotationTask:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        quotationId:
+          type: string
+          format: uuid
+        cycleId:
+          type: string
+          format: uuid
+        taskType:
+          type: string
+          enum:
+            - executor_intake
+            - qa_review
+            - rnd_review
+            - executor_consolidation
+            - accounting_review
+            - director_review
+        taskStatus:
+          type: string
+          enum:
+            - pending
+            - in_progress
+            - completed
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaStartedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaDeadlineAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaCompletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        slaDurationHours:
+          type: number
+          nullable: true
+        slaAlertState:
+          $ref: '#/components/schemas/INLA-S_Quotation_SlaAlertState'
+    INLA-S_Quotation_TaskInboxItem:
+      type: object
+      required:
+        - quotation
+        - task
+      properties:
+        quotation:
+          $ref: '#/components/schemas/INLA-S_Quotation_Quotation'
+        task:
+          $ref: '#/components/schemas/INLA-S_Quotation_QuotationTask'
+    INLA-S_Quotation_TaskInboxResponse:
+      type: object
+      required:
+        - tasks
+        - total
+        - page
+        - pageSize
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_TaskInboxItem'
+        total:
+          type: integer
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+    INLA-S_Quotation_QaLineItemData:
+      type: object
+      required:
+        - lineNumber
+      description: >-
+        Per quotation line (BM03 / QA-09…15 + optional QA-01/03-style fields per
+        line).
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+          description: Must match `lineItems[].lineNumber` for the current cycle.
+        qualityAssessmentResult:
+          type: string
+          nullable: true
+        qualityRequirements:
+          type: string
+          nullable: true
+        qaNote:
+          type: string
+          nullable: true
+        burstStandard:
+          type: string
+          nullable: true
+          description: QA-09
+        compressionStandard:
+          type: string
+          nullable: true
+          description: QA-10
+        weightLimitStandard:
+          type: string
+          nullable: true
+          description: QA-11
+        kcgStandard:
+          type: string
+          nullable: true
+          description: QA-12
+        kcgQaSxProposal1:
+          type: string
+          nullable: true
+          description: QA-13
+        kcgQaSxProposal2:
+          type: string
+          nullable: true
+          description: QA-14
+        kcgQaSxProposal3:
+          type: string
+          nullable: true
+          description: QA-15
+    INLA-S_Quotation_RndLineItemData:
+      type: object
+      required:
+        - lineNumber
+      description: Per quotation line — RND-01, RND-02, RND-11, RND-05.
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        printingPlateCost:
+          type: number
+          minimum: 0
+          nullable: true
+          description: RND-01
+        dieCost:
+          type: number
+          minimum: 0
+          nullable: true
+          description: RND-02
+        productionPlan:
+          type: string
+          nullable: true
+          description: >-
+            RND-11 production steps (e.g. separated by `>`); non-whitespace
+            required for task complete.
+        rndNote:
+          type: string
+          nullable: true
+          description: RND-05
+    INLA-S_Quotation_QaData:
+      type: object
+      required:
+        - qaLineData
+      description: Per-line QA rows (`quotation_line_qa`), ordered by `lineNumber`.
+      properties:
+        qaLineData:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_QaLineItemData'
+          description: >-
+            One element per current-cycle line; may be `[]` before fill or when
+            there are no lines.
+      example:
+        qaLineData:
+          - lineNumber: 1
+            qualityAssessmentResult: Đạt
+            burstStandard: ≥ 800 kPa
+            compressionStandard: ≥ 4000 N
+            weightLimitStandard: ≤ 15 kg
+            kcgStandard: Đạt Tiger spec
+            kcgQaSxProposal1: Đề xuất 1
+            kcgQaSxProposal2: Đề xuất 2
+            kcgQaSxProposal3: null
+    INLA-S_Quotation_QaDataPut:
+      type: object
+      required:
+        - qaLineData
+      properties:
+        qaLineData:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_QaLineItemData'
+    INLA-S_Quotation_RndData:
+      type: object
+      required:
+        - rndLineData
+      description: Per-line R&D rows (`quotation_line_rnd`), ordered by `lineNumber`.
+      properties:
+        rndLineData:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_RndLineItemData'
+          description: One element per current-cycle line.
+      example:
+        rndLineData:
+          - lineNumber: 1
+            printingPlateCost: 1500000
+            dieCost: 800000
+            productionPlan: in cuộn > sóng > bế > đóng pallet
+            rndNote: null
+    INLA-S_Quotation_RndDataPut:
+      type: object
+      required:
+        - rndLineData
+      properties:
+        rndLineData:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_RndLineItemData'
+    INLA-S_Quotation_DirectorLineDecision:
+      type: object
+      required:
+        - lineNumber
+        - decision
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+          enum:
+            - approved
+            - rejected
+        approvalNote:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+          description: Required when `decision` is `rejected`.
+    INLA-S_Quotation_DirectorDecisionRequest:
+      type: object
+      required:
+        - lines
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_DirectorLineDecision'
+        version:
+          type: integer
+          description: Optimistic lock on `quotations.version`.
+    INLA-S_Quotation_DirectorLineData:
+      type: object
+      required:
+        - lineNumber
+      properties:
+        lineNumber:
+          type: integer
+          minimum: 1
+        directorDecision:
+          type: string
+          nullable: true
+          enum:
+            - approved
+            - rejected
+        approvalNote:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+        decisionAt:
+          type: string
+          format: date-time
+          nullable: true
+    INLA-S_Quotation_DirectorData:
+      type: object
+      required:
+        - directorLineData
+      properties:
+        directorLineData:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_DirectorLineData'
+          description: >-
+            One row per line (`quotation_line_director`); decisions null until
+            director submits.
+    INLA-S_Quotation_DevelopmentMinutesParticipant:
+      type: object
+      required:
+        - seq
+        - fullName
+        - department
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+        fullName:
+          type: string
+        department:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+    INLA-S_Quotation_DevelopmentMinutesPrintPlate:
+      type: object
+      required:
+        - plateNo
+      properties:
+        plateNo:
+          type: integer
+          minimum: 1
+          maximum: 7
+        colorSystem:
+          type: string
+          nullable: true
+        trame:
+          type: string
+          nullable: true
+        anilox:
+          type: string
+          nullable: true
+    INLA-S_Quotation_DevelopmentMinutesPayload:
+      type: object
+      properties:
+        participants:
+          type: array
+          items:
+            $ref: >-
+              #/components/schemas/INLA-S_Quotation_DevelopmentMinutesParticipant
+        printPlates:
+          type: array
+          items:
+            $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutesPrintPlate'
+        designNotes:
+          type: string
+          nullable: true
+        sampleBoxNotes:
+          type: string
+          nullable: true
+        finishDieCut:
+          type: string
+          nullable: true
+        finishGlue:
+          type: string
+          nullable: true
+        finishStaple:
+          type: string
+          nullable: true
+        uvCoating:
+          type: string
+          nullable: true
+        bundlingMethod:
+          type: string
+          nullable: true
+        palletNotes:
+          type: string
+          nullable: true
+        shippingNotes:
+          type: string
+          nullable: true
+        otherNotes:
+          type: string
+          nullable: true
+        meetingConclusion:
+          type: string
+          nullable: true
+    INLA-S_Quotation_DevelopmentMinutesInput:
+      type: object
+      properties:
+        meetingPlace:
+          type: string
+          nullable: true
+        meetingDate:
+          type: string
+          format: date
+          nullable: true
+        payload:
+          $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutesPayload'
+    INLA-S_Quotation_DevelopmentMinutes:
+      allOf:
+        - $ref: '#/components/schemas/INLA-S_Quotation_DevelopmentMinutesInput'
+        - type: object
+          properties:
+            updatedAt:
+              type: string
+              format: date-time
+              nullable: true
+    INLA-S_Quotation_AttachmentSection:
+      type: string
+      enum:
+        - sales
+        - qa
+        - rnd
+        - executor_intake
+        - executor_consolidation
+        - accounting
+      description: Matches `attachment_section_enum` / validation `ATTACHMENT_SECTIONS`.
+    INLA-S_Quotation_PresignAttachmentRequest:
+      type: object
+      required:
+        - fileName
+        - mimeType
+        - section
+        - size
+      properties:
+        fileName:
+          type: string
+        mimeType:
+          type: string
+        section:
+          $ref: '#/components/schemas/INLA-S_Quotation_AttachmentSection'
+        size:
+          type: integer
+          minimum: 1
+          description: Size in bytes (server enforces per-category limits).
+    INLA-S_Quotation_Attachment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        quotationId:
+          type: string
+          format: uuid
+        cycleId:
+          type: string
+          format: uuid
+        section:
+          $ref: '#/components/schemas/INLA-S_Quotation_AttachmentSection'
+        fileName:
+          type: string
+        fileExtension:
+          type: string
+        mimeType:
+          type: string
+        fileSizeBytes:
+          type: integer
+        storageKey:
+          type: string
+        uploadedBy:
+          type: string
+        uploadedByRole:
+          type: string
+        uploadedAt:
+          type: string
+          format: date-time
+          nullable: true
+        sourceAttachmentId:
+          type: string
+          format: uuid
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+    INLA-S_Quotation_Revision:
+      type: object
+    INLA-S_Quotation_HistoryResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+        auditEvents:
+          type: array
+          items:
+            type: object
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    INLA-S_Quotation_Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+  responses:
+    INLA-S_Users_BadRequest:
+      description: >
+        The body, a field, or a Cognito parameter is invalid.
+
+        Lambda validation messages are `Invalid JSON body.`, `Invalid body.`,
+        `Invalid username.`,
+
+        `Invalid email.`, `Invalid name.`, `Invalid phoneNumber.`, `Invalid
+        role.`, and `Invalid level.`
+
+        Create checks those fields in that order. A non-object JSON body uses
+        `Invalid body.`
+
+        `InvalidParameterException` from Cognito uses Cognito's message with the
+        same code.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          examples:
+            field:
+              summary: Field validation
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid phoneNumber.
+            json:
+              summary: Body is not JSON
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid JSON body.
+            emptyUpdate:
+              summary: Update contains no fields
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid body.
+    INLA-S_Users_Unauthorized:
+      description: >
+        The access token is missing or invalid, or the Lambda event has no
+        Cognito claims.
+
+        API Gateway returns `message` when the JWT authorizer rejects the call.
+
+        The Lambda returns `error` when it is invoked without claims.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/INLA-S_Users_GatewayMessage'
+              - $ref: '#/components/schemas/INLA-S_Users_Error'
+          examples:
+            gateway:
+              summary: API Gateway rejected the token
+              value:
+                message: Unauthorized
+            lambda:
+              summary: Lambda received no claims
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: A valid Cognito access token is required.
+    INLA-S_Users_Forbidden:
+      description: The caller is not in the ADMIN group, or Cognito rejected the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          examples:
+            notAdmin:
+              summary: Caller is not in ADMIN
+              value:
+                error:
+                  code: FORBIDDEN
+                  message: Only the ADMIN group can manage users.
+            cognito:
+              summary: Cognito rejected the operation
+              value:
+                error:
+                  code: FORBIDDEN
+                  message: Cognito rejected this operation.
+    INLA-S_Users_NotFound:
+      description: Cognito returned `UserNotFoundException` or `ResourceNotFoundException`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          example:
+            error:
+              code: NOT_FOUND
+              message: User not found.
+    INLA-S_Users_TooManyRequests:
+      description: Cognito returned `TooManyRequestsException` or `LimitExceededException`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          example:
+            error:
+              code: TOO_MANY_REQUESTS
+              message: Too many requests. Try again later.
+    INLA-S_Users_EmailFailed:
+      description: Cognito returned `CodeDeliveryFailureException` while sending email.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          example:
+            error:
+              code: EMAIL_FAILED
+              message: Cognito could not send the email.
+    INLA-S_Users_InternalError:
+      description: >
+        `USER_POOL_ID` is not configured, or the Lambda caught an unexpected
+        error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Users_Error'
+          examples:
+            missingPool:
+              summary: USER_POOL_ID is unset
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: USER_POOL_ID is not configured.
+            unexpected:
+              summary: Unmapped exception
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: Unexpected error.
+    INLA-S_Customer_BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+    INLA-S_Customer_Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+    INLA-S_Customer_Forbidden:
+      description: Caller is not ADMIN or SALES, or ADMIN-only route
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+    INLA-S_Customer_NotFound:
+      description: Resource not found or not visible to SALES
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+    INLA-S_Customer_Conflict:
+      description: Unique constraint violation (duplicate tax ID / MST)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+          example:
+            error:
+              code: CONFLICT
+              message: A customer with this tax ID (MST) already exists.
+    INLA-S_Customer_InternalError:
+      description: Missing DATABASE_URL or unexpected error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Customer_Error'
+    INLA-S_Quotation_BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+    INLA-S_Quotation_Unauthorized:
+      description: Missing JWT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+    INLA-S_Quotation_Forbidden:
+      description: Role denied (incl. ADMIN workflow mutation)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+    INLA-S_Quotation_NotFound:
+      description: Not found or SALES scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+    INLA-S_Quotation_Conflict:
+      description: Version mismatch or invalid state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+    INLA-S_Quotation_InternalError:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/INLA-S_Quotation_Error'
+x-tagGroups:
+  - name: INLA-S Users
+    tags:
+      - INLA-S_Users_Users
+      - INLA-S_Users_Roles
+  - name: INLA-S Customer
+    tags:
+      - INLA-S_Customer_Customers
+      - INLA-S_Customer_Contacts
+      - INLA-S_Customer_Sales
+      - INLA-S_Customer_History
+  - name: INLA-S Quotation
+    tags:
+      - INLA-S_Quotation_Quotations
+      - INLA-S_Quotation_Workflow
+      - INLA-S_Quotation_Tasks
+      - INLA-S_Quotation_RoleData
+      - INLA-S_Quotation_Attachments
+      - INLA-S_Quotation_History
+      - INLA-S_Quotation_CustomerTab
+      - INLA-S_Quotation_Reports

@@ -1,0 +1,898 @@
+openapi: 3.0.3
+info:
+  title: INLA-S Customer
+  version: "1.0.0"
+  description: |
+    Customer management MVP (customers, contacts, sales relations, audit history).
+    HTTP API v2 invokes the customer Lambda (`src/index.handler`) using `event.routeKey`.
+    Path `{code}` is the display customer code (`KH-######`). JSON bodies and fields use camelCase.
+
+    **Authorization:** Cognito JWT required. Only **ADMIN** (full) or **SALES** (scoped via active
+    `customer_sales_relations`) may call these routes. Customer activate/deactivate and assign/remove
+    sales relations are **ADMIN**-only. SALES `POST /customers` auto-creates an active sales relation for the caller.
+
+    Writes use `runWithRequestContext` so DB audit triggers populate `audit_events`; the Lambda does not insert audit rows.
+servers:
+  - url: https://{apiHost}
+    variables:
+      apiHost:
+        default: api.example.com
+security:
+  - cognitoAccessToken: []
+tags:
+  - name: Customers
+  - name: Contacts
+  - name: Sales
+  - name: History
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      tags: [Customers]
+      summary: List customers
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/CustomerType"
+        - $ref: "#/components/parameters/Province"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Paginated customer list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createCustomer
+      tags: [Customers]
+      summary: Create customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCustomerRequest"
+      responses:
+        "201":
+          description: Created customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+    get:
+      operationId: getCustomer
+      tags: [Customers]
+      summary: Get customer by code
+      responses:
+        "200":
+          description: Customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: updateCustomer
+      tags: [Customers]
+      summary: Update customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCustomerRequest"
+      responses:
+        "200":
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/deactivate:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+    post:
+      operationId: deactivateCustomer
+      tags: [Customers]
+      summary: Deactivate customer (ADMIN)
+      description: Sets customer `status` to `inactive`. Only callers in the **ADMIN** Cognito group may use this route.
+      responses:
+        "200":
+          description: Customer marked inactive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/activate:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+    post:
+      operationId: activateCustomer
+      tags: [Customers]
+      summary: Activate customer (ADMIN)
+      description: Sets customer `status` to `active`. Only callers in the **ADMIN** Cognito group may use this route.
+      responses:
+        "200":
+          description: Customer marked active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/contacts:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+    get:
+      operationId: listContacts
+      tags: [Contacts]
+      summary: List contacts
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Contacts for the customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createContact
+      tags: [Contacts]
+      summary: Create contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactRequest"
+      responses:
+        "201":
+          description: Created contact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/contacts/{contactId}:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+      - $ref: "#/components/parameters/ContactId"
+    get:
+      operationId: getContact
+      tags: [Contacts]
+      summary: Get contact
+      responses:
+        "200":
+          description: Contact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: updateContact
+      tags: [Contacts]
+      summary: Update contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactRequest"
+      responses:
+        "200":
+          description: Updated contact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/contacts/{contactId}/deactivate:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+      - $ref: "#/components/parameters/ContactId"
+    post:
+      operationId: deactivateContact
+      tags: [Contacts]
+      summary: Deactivate contact
+      responses:
+        "200":
+          description: Contact marked inactive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/sales:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+    get:
+      operationId: listSalesRelations
+      tags: [Sales]
+      summary: List active sales relations
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Active sales links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SalesListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: addSalesRelation
+      tags: [Sales]
+      summary: Assign sales user (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddSalesRequest"
+      responses:
+        "201":
+          description: Created or reactivated relation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SalesRelationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/sales/{salesUsername}/remove:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+      - $ref: "#/components/parameters/SalesUsername"
+    post:
+      operationId: removeSalesRelation
+      tags: [Sales]
+      summary: End sales relation (ADMIN)
+      responses:
+        "200":
+          description: Relation ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SalesRelationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /customers/{code}/history:
+    parameters:
+      - $ref: "#/components/parameters/CustomerCode"
+      - $ref: "#/components/parameters/Page"
+      - $ref: "#/components/parameters/PageSize"
+    get:
+      operationId: listCustomerHistory
+      tags: [History]
+      summary: Paginated audit history
+      responses:
+        "200":
+          description: Audit events for the customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito access token (API Gateway JWT authorizer).
+  parameters:
+    CustomerCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+        example: KH-000128
+    ContactId:
+      name: contactId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SalesUsername:
+      name: salesUsername
+      in: path
+      required: true
+      schema:
+        type: string
+        description: Cognito username (usually email), lowercase.
+    Query:
+      name: q
+      in: query
+      schema:
+        type: string
+      description: Case-insensitive match on name, code, taxId, or email.
+    CustomerType:
+      name: customerType
+      in: query
+      schema:
+        $ref: "#/components/schemas/CustomerType"
+    Province:
+      name: province
+      in: query
+      schema:
+        type: string
+    Status:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/EntityStatus"
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  schemas:
+    CustomerType:
+      type: string
+      enum: [business, individual]
+    EntityStatus:
+      type: string
+      enum: [active, inactive]
+    RelationStatus:
+      type: string
+      enum: [active, inactive]
+    Customer:
+      type: object
+      required:
+        - id
+        - code
+        - customerType
+        - name
+        - taxId
+        - phone
+        - addressLine
+        - province
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        customerType:
+          $ref: "#/components/schemas/CustomerType"
+        name:
+          type: string
+        shortName:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          nullable: true
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        status:
+          $ref: "#/components/schemas/EntityStatus"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+        updatedBy:
+          type: string
+          nullable: true
+    Contact:
+      type: object
+      required:
+        - id
+        - customerId
+        - fullName
+        - email
+        - phone
+        - isPrimary
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        isPrimary:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/EntityStatus"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SalesRelation:
+      type: object
+      required:
+        - id
+        - customerId
+        - salesUsername
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        salesUsername:
+          type: string
+        status:
+          $ref: "#/components/schemas/RelationStatus"
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        endedBy:
+          type: string
+          nullable: true
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        occurredAt:
+          type: string
+          format: date-time
+        actorUsername:
+          type: string
+          nullable: true
+        actorRole:
+          type: string
+          nullable: true
+        requestId:
+          type: string
+          nullable: true
+        schemaName:
+          type: string
+        tableName:
+          type: string
+        operation:
+          type: string
+        entityId:
+          type: string
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+        action:
+          type: string
+        oldData:
+          type: object
+          nullable: true
+        newData:
+          type: object
+          nullable: true
+    CreateCustomerRequest:
+      type: object
+      required:
+        - customerType
+        - name
+        - taxId
+        - phone
+        - addressLine
+        - province
+      properties:
+        customerType:
+          $ref: "#/components/schemas/CustomerType"
+        name:
+          type: string
+        shortName:
+          type: string
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          nullable: true
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+          description: Optional; when set, must use `http://` or `https://`.
+        notes:
+          type: string
+    UpdateCustomerRequest:
+      type: object
+      description: At least one field required; same validation as create per field.
+      properties:
+        customerType:
+          $ref: "#/components/schemas/CustomerType"
+        name:
+          type: string
+        shortName:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        addressLine:
+          type: string
+        province:
+          type: string
+        website:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+    CreateContactRequest:
+      type: object
+      required: [fullName, email, phone]
+      properties:
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+        department:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+        isPrimary:
+          type: boolean
+          default: false
+    UpdateContactRequest:
+      type: object
+      properties:
+        fullName:
+          type: string
+        jobTitle:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        isPrimary:
+          type: boolean
+    AddSalesRequest:
+      type: object
+      required: [salesUsername]
+      properties:
+        salesUsername:
+          type: string
+          description: Cognito username (email), stored lowercase.
+    CustomerResponse:
+      type: object
+      required: [customer]
+      properties:
+        customer:
+          $ref: "#/components/schemas/Customer"
+    CustomerListResponse:
+      type: object
+      required: [customers, page, pageSize, total]
+      properties:
+        customers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Customer"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    ContactResponse:
+      type: object
+      required: [contact]
+      properties:
+        contact:
+          $ref: "#/components/schemas/Contact"
+    ContactListResponse:
+      type: object
+      required: [contacts, page, pageSize, total]
+      properties:
+        contacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contact"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    SalesRelationResponse:
+      type: object
+      required: [relation]
+      properties:
+        relation:
+          $ref: "#/components/schemas/SalesRelation"
+    SalesListResponse:
+      type: object
+      required: [sales, page, pageSize, total]
+      properties:
+        sales:
+          type: array
+          items:
+            $ref: "#/components/schemas/SalesRelation"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    HistoryListResponse:
+      type: object
+      required: [events, page, pageSize, total]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Caller is not ADMIN or SALES, or ADMIN-only route
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found or not visible to SALES
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Unique constraint violation (duplicate tax ID / MST)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: CONFLICT
+              message: A customer with this tax ID (MST) already exists.
+    InternalError:
+      description: Missing DATABASE_URL or unexpected error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

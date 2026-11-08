@@ -1,0 +1,13 @@
+scenario_id	customer_name	sales_label	workflow_status	business_outcome	cycle_type	box_type	length_mm	width_mm	height_mm	quantity_pieces	seed_flags	notes
+Q01	HEINEKEN	TỒN	draft	-	new	Thùng nắp đối khẩu	420	310	280	5000	-	Multi-line (3 SKU) — nháp — sales.ton
+Q02	KHÔI NGUYÊN	PHƯƠNG	draft	-	new	Thùng âm dương	380	290	260	3000	-	Multi-line (3 SKU) — nháp — sales.phuong
+Q03	ANH KHOA	PHƯƠNG	cancelled	-	new	Thùng nắp cài	360	280	240	2500	-	Multi-line — nháp đã hủy
+Q04	VIGLACERA	TỒN	executor_intake	-	new	Thùng nắp cài	450	320	300	8000	-	Multi-line — Executor tiếp nhận
+Q05	TTI	TỒN	qa_rnd_review	-	new	Thùng nắp đối khẩu	400	300	250	6000	qa_done	Multi-line — QA xong, R&D chờ
+Q06	Intersnack	PHƯƠNG	qa_rnd_review	-	new	Thùng nắp đối khẩu	410	305	270	4500	both_active	Multi-line — QA và R&D đang xử lý
+Q07	TÂN Á ĐẠI THÀNH	TỒN	executor_consolidation	-	new	Thùng nắp đối khẩu	415	308	275	5800	-	Multi-line — tổng hợp báo giá
+Q08	NAM HOA	PHƯƠNG	accounting_review	-	new	Thùng nắp đối khẩu	395	295	255	5500	-	Multi-line — kế toán
+Q09	HEINEKEN	TỒN	director_review	-	new	Thùng nắp đối khẩu	405	300	260	6200	-	Multi-line (KH thứ 2) — chờ giám đốc
+Q10	KHÔI NGUYÊN	PHƯƠNG	approved	not_updated	new	Thùng nắp đối khẩu	415	308	275	5800	-	Multi-line — đã duyệt, outcome chưa cập nhật
+Q11	VIGLACERA	TỒN	approved	lost	new	Thùng nắp đối khẩu	400	300	250	4000	-	Multi-line — đã duyệt — thua thầu
+Q12	Intersnack	PHƯƠNG	rejected	-	new	Thùng nắp đối khẩu	390	292	248	5200	-	Multi-line — giám đốc từ chối

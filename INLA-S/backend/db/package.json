@@ -1,0 +1,22 @@
+{
+  "name": "inla-s-db",
+  "private": true,
+  "description": "Shared Neon HTTP client and SQL migrations for INLA-S.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "migrate": "node-pg-migrate up --migrations-dir migrations --database-url-var DATABASE_URL",
+    "seed:dev": "node seeds/dev/seed-dev.js",
+    "seed:dev:down": "node seeds/dev/seed-dev.js --down",
+    "seed:quotations:dev": "node seeds/dev/seed-quotations-dev.js",
+    "seed:quotations:dev:down": "node seeds/dev/seed-quotations-dev.js --down"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0"
+  },
+  "devDependencies": {
+    "node-pg-migrate": "^9.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "inla-s-quotation",
+  "private": true,
+  "description": "INLA-S quotation management Lambda.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.700.0",
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/s3-request-presigner": "^3.750.0",
+    "inla-s-db": "file:../db"
+  }
+}

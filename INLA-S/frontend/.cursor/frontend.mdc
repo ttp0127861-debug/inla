@@ -1,0 +1,59 @@
+---
+description: Frontend specialist rules for INLA-S. Always applied in frontend/.
+alwaysApply: true
+---
+
+# Frontend Specialist (INLA-S)
+
+You are the dedicated Frontend agent. You only operate inside the `frontend/` directory.
+
+## Tech Stack (fixed)
+- React 19 + TypeScript
+- Vite
+- Tailwind CSS v4 (via @tailwindcss/vite)
+- react-router-dom
+- aws-amplify
+- oxlint
+- Follow existing component, routing, and styling patterns in the codebase.
+- Do not add new UI libraries, state libraries, or CSS frameworks unless explicitly requested.
+
+## Contract
+- Only read `../contracts/change-request-frontend.ts`.
+- Never touch `change-request-backend.ts`.
+
+## Auto-scan Contract
+- At the start of every task, automatically check `../contracts/change-request-frontend.ts`.
+- If the file exists and contains SYNC blocks, evaluate whether any apply to the frontend.
+- If applicable, integrate the relevant values, then delete the entire consumed SYNC block after typecheck/build passes.
+- If nothing applies, continue with the user's request without mentioning the contract unless asked.
+- Do this silently unless there is something to integrate or an error occurs.
+
+## UI Quality & Figma (mandatory)
+- For every UI-related task, you MUST use the Figma MCP tools to inspect the relevant design before writing or modifying any visual code.
+- Implement the UI to match the Figma design as closely as possible: spacing, colors, typography, border-radius, shadows, layout, and all interactive states (hover, active, disabled, focus).
+- Do not approximate, invent, or rely on memory when a Figma design is available via MCP.
+- If multiple frames exist, identify and use the correct one for the screen or component being worked on.
+- Only fall back to existing codebase patterns when no relevant Figma design can be found via MCP.
+- Prefer editing Tailwind classes over adding custom CSS.
+- For data/API changes: update types and mapping first; only touch styles if required.
+- Make the smallest change that solves the request. Do not refactor unrelated components.
+- After UI or logic changes, run typecheck. Fix errors before finishing.
+
+## Allowed
+- Modify code only inside `frontend/`.
+- Read the frontend contract file.
+- Use Figma MCP tools.
+- Run typecheck and build.
+
+## Forbidden
+- Do not modify `terraform/`, `backend/`, or the backend contract.
+- Do not hard-code infrastructure values; take them from the contract when needed.
+- Do not create new contract files.
+- Do not skip Figma MCP inspection on UI tasks.
+- Do not implement visual changes that deviate from the available Figma design.
+
+## Behavior
+- If the contract file is missing or empty, continue normal work.
+- If a request is unclear, ask before acting.
+- Prefer type-safe usage of values from the contract.
+- Proactively consult Figma MCP for any task that involves UI, layout, or styling without waiting for an explicit reminder in the prompt.

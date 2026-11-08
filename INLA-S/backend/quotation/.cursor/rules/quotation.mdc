@@ -1,0 +1,42 @@
+---
+description: Rules for the quotation Lambda module (Neon Postgres). Applied inside backend/quotation/.
+alwaysApply: true
+---
+
+# Quotation Module (Lambda + Postgres)
+
+Node.js AWS Lambda (CommonJS) for quotation MVP. **PR1** = core workflow without S3 attachments. **PR2** = attachments + ATT file rules.
+
+## Tech Stack (fixed)
+- Node.js >= 20, HTTP API v2 (`event.routeKey`), entry `src/index.js`
+- **`DATABASE_URL`** env var (Neon connection string); never hard-code. Handler uses `inla-s-db` `isDatabaseConfigured()` before routing.
+- DB: `inla-s-db` (`file:../db`) — `query` reads, **`runWithRequestContext`** all writes
+- No TypeScript, ORM, or direct Neon/pg clients
+- JSON **camelCase**; path `{code}` = `BG-######`
+- **PR1:** no `@aws-sdk/client-s3` dependency; no attachment HTTP routes
+- **PR2:** S3 presign/confirm/delete; env `ATTACHMENTS_BUCKET`, `AWS_REGION`; set `ATTACHMENTS_ENABLED=true` to enforce ATT-009–011 on task complete
+
+## Authorization
+- Roles: ADMIN, DIRECTOR, EXECUTOR, SALES, QA, R&D, ACCOUNTING (principal order same as customer)
+- **SALES**: list/get own (`sales_owner_username`); create/update/cancel/submit/clone/resubmit/outcome **owner only**; customer pick requires active `customer_sales_relations`
+- **EXECUTOR, QA, R&D, ACCOUNTING, DIRECTOR**: list/get all
+- **ADMIN**: **read-only** on workflow mutations (403)
+- SALES non-owner: **404**
+- Task/role PUT and task start/complete: matching role only; not ADMIN
+
+## Workflow
+- App owns `quotation_workflow_events` (single writer); each transition updates `quotations.workflow_status` + inserts event
+- Submit creates snapshot, tasks (SLA snapshot from `services/sla.js`), revision milestone
+- TR-09: `executor_consolidation` only after **both** QA and R&D tasks completed
+- Optimistic lock: optional `version` on mutating requests → 409 on mismatch
+
+## Scope
+- Only `backend/quotation/`; maintain `openapi.yaml` (PR1 paths only until PR2 adds attachments)
+- Do not edit `terraform/`, `frontend/`, `backend/db/migrations/`, `backend/api-spec.yaml`
+
+## Contract
+- Check `../../contracts/change-request-backend.ts` for SYNC (e.g. `ATTACHMENTS_BUCKET`); **`DATABASE_URL` is always from env / Terraform, not the contract.** Delete consumed SYNC blocks after verify.
+
+## Forbidden
+- INSERT into `audit_events` from JS (DB triggers only)
+- Hard delete quotations

@@ -1,0 +1,15 @@
+{
+  "documentCode": "BM03-QT02-LTM",
+  "title": "Biên bản họp phát triển sản phẩm mới",
+  "titleEn": "New product development meeting minutes",
+  "version": "1.0",
+  "effectiveDate": "2026-11-06",
+  "source": "Khách hàng — mẫu phòng R&D",
+  "templateFile": "BM03-QT02-LTM_Bien_ban_hop_PTDSP.xlsx",
+  "inSystemScope": {
+    "digitalFormAnnex": "document/annex/Annex_BM03_Development_Minutes_MVP.md",
+    "fieldMap": "document/annex/BM03-field-map.md",
+    "specDelta": "document/spec-deltas/2026-11-06-BM03-qa-rnd-split.md"
+  },
+  "notes": "File Excel là bản in/layout tham chiếu. Dữ liệu runtime lưu theo Annex BM03 + QA/R&D task (việc A), không nhân bản Sales."
+}

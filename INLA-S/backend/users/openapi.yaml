@@ -1,0 +1,790 @@
+openapi: 3.0.3
+info:
+  title: INLA-S Users
+  version: "1.0.0"
+  description: |
+    User administration for one Cognito user pool. API Gateway HTTP API invokes the users Lambda (`src/index.handler`).
+    The pool id is the `USER_POOL_ID` environment variable. Routes are served from the API host with no stage prefix.
+
+    API Gateway validates a Cognito access token on every route. `GET /users` and `GET /users/{username}` allow `ADMIN` or `SALES` (read-only directory).
+    All other routes require `ADMIN`.
+
+    Users written by this API have exactly one role. At most one enabled user may have the role `EXECUTOR`.
+    `level` is stored in the Cognito attribute `custom:level`. Phone numbers are stored as E.164.
+    This API has no delete route. A created user is deleted only to roll back a create that fails while the role is assigned.
+servers:
+  - url: https://{apiHost}
+    description: Users HTTP API. The `$default` stage is implicit, so paths have no stage prefix.
+    variables:
+      apiHost:
+        default: users-api.example.com
+        description: Hostname of this HTTP API.
+security:
+  - cognitoAccessToken: []
+tags:
+  - name: Users
+    description: Cognito user records and their single role group.
+  - name: Roles
+    description: Cognito groups used as roles.
+paths:
+  /roles:
+    get:
+      operationId: listRoles
+      tags: [Roles]
+      summary: List roles
+      description: |
+        Returns the Cognito groups whose names are roles, in this order:
+        `ADMIN`, `DIRECTOR`, `EXECUTOR`, `SALES`, `QA`, `R&D`, `ACCOUNTING`.
+        Groups that do not exist in the pool are omitted. Backed by `ListGroups`.
+      responses:
+        "200":
+          description: Roles that exist in the user pool.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleList"
+              example:
+                roles:
+                  - name: ADMIN
+                    description: Administer users
+                    precedence: 1
+                  - name: SALES
+                    description: ""
+                    precedence: 4
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /users:
+    get:
+      operationId: listUsers
+      tags: [Users]
+      summary: List users
+      description: |
+        Lists Cognito users and each user's role group (`ListUsers`, then `AdminListGroupsForUser`).
+        Reading stops when the pool is exhausted or 1000 users have been read, then filters and paginates in memory.
+        Default pagination: page 1, pageSize 20 when query params are omitted.
+        Filters are combined. A user is included only when every supplied filter matches.
+
+        **Authorization:** `ADMIN` or `SALES` (read-only). Mutating user routes remain `ADMIN` only.
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Role"
+        - $ref: "#/components/parameters/Enabled"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Users that match the filters. The array is empty when nothing matches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserList"
+              example:
+                users:
+                  - username: person@inla.vn
+                    email: person@inla.vn
+                    name: Nguyen Van A
+                    phoneNumber: "+84901234567"
+                    level: staff
+                    role: SALES
+                    enabled: true
+                    status: CONFIRMED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createUser
+      tags: [Users]
+      summary: Create a user
+      description: |
+        Creates a Cognito user with `AdminCreateUser`, using the email as the username, and emails a temporary password.
+        The user is then added to the role group with `AdminAddUserToGroup`.
+        If assigning the group fails, the new user is deleted with `AdminDeleteUser` and the original error is returned.
+        Creating an `EXECUTOR` is rejected when another enabled `EXECUTOR` already exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+            example:
+              email: person@inla.vn
+              name: Nguyen Van A
+              phoneNumber: "0901234567"
+              role: SALES
+              level: staff
+      responses:
+        "201":
+          description: The created user, including the assigned role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: "+84901234567"
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: FORCE_CHANGE_PASSWORD
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The email is already a user, or another enabled EXECUTOR already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                emailExists:
+                  summary: Email already exists
+                  value:
+                    error:
+                      code: CONFLICT
+                      message: A user with this email already exists.
+                executorExists:
+                  summary: Active EXECUTOR already exists
+                  value:
+                    error:
+                      code: CONFLICT
+                      message: Only one active EXECUTOR is allowed.
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/EmailFailed"
+  /users/{username}:
+    parameters:
+      - $ref: "#/components/parameters/Username"
+    get:
+      operationId: getUser
+      tags: [Users]
+      summary: Get a user
+      description: Loads one Cognito user with `AdminGetUser` and that user's groups with `AdminListGroupsForUser`.
+      responses:
+        "200":
+          description: The requested user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: "+84901234567"
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: CONFIRMED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: updateUser
+      tags: [Users]
+      summary: Update a user
+      description: |
+        Updates `name`, `phone_number`, and `custom:level` with `AdminUpdateUserAttributes`.
+        When `role` is present, other role groups are removed and the user is added to the new group.
+        Email cannot be changed. Sending `email` returns 400 even if other fields are valid.
+        At least one of `name`, `phoneNumber`, `role`, and `level` is required.
+        Assigning `EXECUTOR` to a user who is currently enabled is rejected when another enabled `EXECUTOR` exists.
+        Assigning `EXECUTOR` to a disabled user does not perform that check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+            example:
+              name: Nguyen Van A
+              phoneNumber: "0901234567"
+              role: SALES
+              level: manager
+      responses:
+        "200":
+          description: The user after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The user is enabled and another enabled EXECUTOR already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: CONFLICT
+                  message: Only one active EXECUTOR is allowed.
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /users/{username}/disable:
+    post:
+      operationId: disableUser
+      tags: [Users]
+      summary: Disable a user
+      description: |
+        Disables the Cognito user with `AdminDisableUser` and returns the updated user.
+        If the user is already disabled, Cognito is not called again and the current user is returned.
+        An admin cannot disable the account identified by their own `username`, `cognito:username`, or `email` claim.
+        The comparison is case-insensitive. This route has no request body.
+      parameters:
+        - $ref: "#/components/parameters/Username"
+      responses:
+        "200":
+          description: The user, with enabled set to false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: "+84901234567"
+                  level: staff
+                  role: SALES
+                  enabled: false
+                  status: CONFIRMED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an admin, is disabling their own account, or Cognito rejected the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                notAdmin:
+                  summary: Caller is not in ADMIN
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: Only the ADMIN group can manage users.
+                self:
+                  summary: Caller targeted their own account
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: You cannot disable your own account.
+                cognito:
+                  summary: Cognito rejected the operation
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: Cognito rejected this operation.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /users/{username}/enable:
+    post:
+      operationId: enableUser
+      tags: [Users]
+      summary: Enable a user
+      description: |
+        Enables the Cognito user with `AdminEnableUser` and returns the updated user.
+        If the user is already enabled, Cognito is not called again and the current user is returned.
+        Enabling a disabled member of `EXECUTOR` is rejected when another enabled `EXECUTOR` exists.
+        This route has no request body.
+      parameters:
+        - $ref: "#/components/parameters/Username"
+      responses:
+        "200":
+          description: The user, with enabled set to true.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+              example:
+                user:
+                  username: person@inla.vn
+                  email: person@inla.vn
+                  name: Nguyen Van A
+                  phoneNumber: "+84901234567"
+                  level: staff
+                  role: SALES
+                  enabled: true
+                  status: CONFIRMED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The user is an EXECUTOR and another enabled EXECUTOR already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: CONFLICT
+                  message: Only one active EXECUTOR is allowed.
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /users/{username}/reset-password:
+    post:
+      operationId: resetUserPassword
+      tags: [Users]
+      summary: Reset a user's password
+      description: |
+        Confirms the user exists, then asks Cognito (`AdminResetUserPassword`) to email a password reset.
+        This route has no request body. `username` in the response is the path value after decoding and trimming.
+      parameters:
+        - $ref: "#/components/parameters/Username"
+      responses:
+        "200":
+          description: Cognito accepted the reset and will email the user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordReset"
+              example:
+                username: person@inla.vn
+                message: Password reset email sent.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/EmailFailed"
+components:
+  securitySchemes:
+    cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Cognito access token sent in the `Authorization` header.
+        API Gateway is the JWT authorizer. The Lambda reads `requestContext.authorizer.jwt.claims`
+        and requires the `ADMIN` group.
+  parameters:
+    Username:
+      name: username
+      in: path
+      required: true
+      description: |
+        Cognito username. Users created by this API use the email address.
+        The value is URL-decoded and trimmed. An empty value is rejected.
+      schema:
+        type: string
+        minLength: 1
+      example: person@inla.vn
+    Query:
+      name: q
+      in: query
+      required: false
+      description: |
+        Case-insensitive substring matched against `name`, `email`, `phoneNumber`, and `username`.
+        Blank and whitespace-only values do not filter the list.
+      schema:
+        type: string
+      example: nguyen
+    Role:
+      name: role
+      in: query
+      required: false
+      description: |
+        Exact match on the user's resolved role.
+        A value that is not one of the known roles matches nobody and yields an empty list.
+      schema:
+        $ref: "#/components/schemas/RoleName"
+    Enabled:
+      name: enabled
+      in: query
+      required: false
+      description: |
+        `true` returns only enabled users. `false` returns only disabled users.
+        Any other value is ignored and does not filter the list.
+      schema:
+        type: string
+        enum: ["true", "false"]
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Page size for list endpoints. Default 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  schemas:
+    RoleName:
+      type: string
+      description: Cognito group used as the user's single role.
+      enum: [ADMIN, DIRECTOR, EXECUTOR, SALES, QA, "R&D", ACCOUNTING]
+    Level:
+      type: string
+      description: Stored in the Cognito attribute `custom:level`.
+      enum: [manager, staff]
+    Role:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          $ref: "#/components/schemas/RoleName"
+        description:
+          type: string
+          description: Cognito group description. Empty when the group has none.
+        precedence:
+          type: integer
+          description: Cognito group precedence. Omitted when the group has no precedence.
+    RoleList:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+    User:
+      type: object
+      required: [username, email, name, phoneNumber, level, role, enabled, status]
+      properties:
+        username:
+          type: string
+          description: Cognito username. For users created here, this is the email.
+        email:
+          type: string
+          description: Cognito `email` attribute, or the username when that attribute is absent.
+        name:
+          type: string
+          description: Cognito `name` attribute. Empty when the attribute is absent.
+        phoneNumber:
+          type: string
+          description: Cognito `phone_number` attribute. E.164 when written by this API. Empty when the attribute is absent.
+          example: "+84901234567"
+        level:
+          type: string
+          description: Cognito `custom:level`. `manager` or `staff` when written by this API. Empty when the attribute is absent.
+          example: staff
+        role:
+          type: string
+          nullable: true
+          enum: [ADMIN, DIRECTOR, EXECUTOR, SALES, QA, "R&D", ACCOUNTING]
+          description: |
+            The first of the user's groups that is a known role, in role order.
+            Null when the user is in none of those groups.
+        enabled:
+          type: boolean
+          description: Cognito enabled flag.
+        status:
+          type: string
+          description: |
+            Cognito `UserStatus`. Common values are `FORCE_CHANGE_PASSWORD`, `CONFIRMED`, and `RESET_REQUIRED`.
+          example: CONFIRMED
+    UserResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+    UserList:
+      type: object
+      required: [users, page, pageSize, total]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        page:
+          type: integer
+          default: 1
+        pageSize:
+          type: integer
+          default: 20
+        total:
+          type: integer
+    CreateUserRequest:
+      type: object
+      required: [email, name, phoneNumber, role, level]
+      properties:
+        email:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: |
+            Trimmed and lowercased. Must match one local part, `@`, and a domain containing a dot, with no spaces.
+            This value becomes the Cognito username. `email_verified` is set to true.
+          example: person@inla.vn
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: |
+            Trimmed. Internal whitespace is collapsed to a single space.
+            ASCII control characters (U+0000 through U+001F) are rejected.
+          example: Nguyen Van A
+        phoneNumber:
+          type: string
+          minLength: 1
+          description: |
+            Vietnam phone number. Spaces, parentheses, dots, and dashes are removed before validation.
+            A leading `0` is replaced with country code `84`. A leading `+` is accepted.
+            The remaining digits must be `84` followed by 8 to 11 digits.
+            Cognito stores the E.164 form, such as `+84901234567` for `0901234567`.
+          example: "0901234567"
+        role:
+          $ref: "#/components/schemas/RoleName"
+        level:
+          $ref: "#/components/schemas/Level"
+    UpdateUserRequest:
+      type: object
+      description: |
+        At least one of `name`, `phoneNumber`, `role`, and `level` is required.
+        Each supplied field uses the same validation as create.
+        `email` is rejected with `Invalid email.` Properties other than these five are ignored.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Same validation as create.
+          example: Nguyen Van A
+        phoneNumber:
+          type: string
+          minLength: 1
+          description: Same validation and E.164 normalization as create.
+          example: "0901234567"
+        role:
+          $ref: "#/components/schemas/RoleName"
+        level:
+          $ref: "#/components/schemas/Level"
+    PasswordReset:
+      type: object
+      required: [username, message]
+      properties:
+        username:
+          type: string
+          description: Path username after URL decoding and trimming.
+        message:
+          type: string
+          enum: ["Password reset email sent."]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - EMAIL_FAILED
+                - TOO_MANY_REQUESTS
+                - INTERNAL_ERROR
+            message:
+              type: string
+    GatewayMessage:
+      type: object
+      required: [message]
+      description: Body returned by API Gateway when the JWT authorizer rejects the request before the Lambda runs.
+      properties:
+        message:
+          type: string
+          example: Unauthorized
+  responses:
+    BadRequest:
+      description: |
+        The body, a field, or a Cognito parameter is invalid.
+        Lambda validation messages are `Invalid JSON body.`, `Invalid body.`, `Invalid username.`,
+        `Invalid email.`, `Invalid name.`, `Invalid phoneNumber.`, `Invalid role.`, and `Invalid level.`
+        Create checks those fields in that order. A non-object JSON body uses `Invalid body.`
+        `InvalidParameterException` from Cognito uses Cognito's message with the same code.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            field:
+              summary: Field validation
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid phoneNumber.
+            json:
+              summary: Body is not JSON
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid JSON body.
+            emptyUpdate:
+              summary: Update contains no fields
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Invalid body.
+    Unauthorized:
+      description: |
+        The access token is missing or invalid, or the Lambda event has no Cognito claims.
+        API Gateway returns `message` when the JWT authorizer rejects the call.
+        The Lambda returns `error` when it is invoked without claims.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/GatewayMessage"
+              - $ref: "#/components/schemas/Error"
+          examples:
+            gateway:
+              summary: API Gateway rejected the token
+              value:
+                message: Unauthorized
+            lambda:
+              summary: Lambda received no claims
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: A valid Cognito access token is required.
+    Forbidden:
+      description: The caller is not in the ADMIN group, or Cognito rejected the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            notAdmin:
+              summary: Caller is not in ADMIN
+              value:
+                error:
+                  code: FORBIDDEN
+                  message: Only the ADMIN group can manage users.
+            cognito:
+              summary: Cognito rejected the operation
+              value:
+                error:
+                  code: FORBIDDEN
+                  message: Cognito rejected this operation.
+    NotFound:
+      description: Cognito returned `UserNotFoundException` or `ResourceNotFoundException`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: NOT_FOUND
+              message: User not found.
+    TooManyRequests:
+      description: Cognito returned `TooManyRequestsException` or `LimitExceededException`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: TOO_MANY_REQUESTS
+              message: Too many requests. Try again later.
+    EmailFailed:
+      description: Cognito returned `CodeDeliveryFailureException` while sending email.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: EMAIL_FAILED
+              message: Cognito could not send the email.
+    InternalError:
+      description: |
+        `USER_POOL_ID` is not configured, or the Lambda caught an unexpected error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            missingPool:
+              summary: USER_POOL_ID is unset
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: USER_POOL_ID is not configured.
+            unexpected:
+              summary: Unmapped exception
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: Unexpected error.

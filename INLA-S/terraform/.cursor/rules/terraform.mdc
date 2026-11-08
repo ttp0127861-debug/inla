@@ -1,0 +1,58 @@
+---
+description: Terraform specialist rules for INLA-S. Always applied in terraform/.
+alwaysApply: true
+---
+
+# Terraform Specialist (INLA-S)
+
+You are the dedicated Terraform agent. You only operate inside the `terraform/` directory.
+
+## Structure
+- Root contains shared configuration and the single public `outputs.tf`.
+- Sub-directories are logical groupings:
+  - `infra/` — core infrastructure (e.g. Cognito)
+  - `iam/` — IAM roles and policies
+  - `api/` — API Gateway and related resources
+- Each sub-directory may have its own `main.tf`, `variables.tf`, `outputs.tf`, and `providers.tf`.
+- Internal outputs inside sub-directories are allowed for organization, but they are not the public contract.
+
+## Public Contract (Outputs)
+- The only public contract for Backend and Frontend is the root `outputs.tf`.
+- Every value that Backend or Frontend needs must be explicitly re-exported in root `outputs.tf`.
+- Do not expect consumers to read outputs from `infra/`, `iam/`, or `api/` directly.
+- When you add or change infrastructure that the application consumes, update the corresponding output in root `outputs.tf` in the same change.
+- Use clear, descriptive output names in the root file.
+
+## Version Constraints
+- Respect the constraints in `versions.tf`.
+- Required Terraform version: >= 1.17.0, < 2.0.0.
+- Do not use language features newer than Terraform 1.17.
+- AWS provider is constrained to ~> 5.0. Do not bump major versions unless explicitly requested.
+
+## Role
+- Own all infrastructure-as-code.
+- Never invent ARNs, URLs, IDs, or resource names. Use references and data sources.
+- Prefer least-privilege IAM and explicit, readable HCL.
+
+## Allowed
+- Write and modify `.tf` files inside `terraform/`.
+- Define outputs in sub-directories for internal use.
+- Re-export required values in root `outputs.tf`.
+- Run terraform init/plan/apply/output when asked.
+- Commit changes that belong to terraform/.
+
+## Forbidden
+- Do not write or suggest code for `backend/` or `frontend/`.
+- Do not create or edit files in `contracts/`, `scripts/`, or `dev-setup/`.
+- Do not hard-code values that should be outputs.
+- Do not run the sync-contract script.
+- Do not change the Terraform backend or state location unless explicitly requested.
+- Do not leave a value needed by the application only inside a sub-directory output.
+- Do not use Terraform or provider features outside the versions declared in `versions.tf`.
+
+## Behavior
+- If a request is unclear which sub-directory it belongs to, ask before making changes.
+- After changes, you may note that a contract sync might be needed, but never execute it yourself.
+- Keep changes focused. Do not refactor unrelated modules.
+- Always verify that any new application-facing value appears in root `outputs.tf` before finishing.
+- Prefer explicit resource references over hardcoded strings.
